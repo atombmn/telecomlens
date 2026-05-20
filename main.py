@@ -1,0 +1,1673 @@
+"""
+TelecomLens — main.py  (FastAPI backend, organisation-agnostic)
+Run:  uvicorn main:app --reload --port 8000
+Docs: http://localhost:8000/docs
+"""
+import os, re, sys, csv, io, subprocess, tempfile, hashlib, platform, json, logging, shutil
+from pathlib import Path
+from typing import Optional
+from datetime import datetime
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("telecomlens")
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, HTMLResponse
+from sqlalchemy import (
+    create_engine, Column, String, Float, Boolean, Integer,
+    DateTime, Text, JSON, func,
+)
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from pydantic_settings import BaseSettings
+
+from parser import parse_bill
+from discover import detect_org_tokens, classify_name, discover_patterns
+# NOTE: report is imported lazily inside the endpoint so a missing python-docx
+# does not crash the whole app at startup.
+
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+class Settings(BaseSettings):
+    database_url: str = "sqlite:///./telecomlens.db"
+    poppler_path: str = "poppler"
+    bills_folder: str = "bills"
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+STATIC_DIR = Path(__file__).parent / "static"
+
+# ── Database ──────────────────────────────────────────────────────────────────
+engine = create_engine(
+    settings.database_url,
+    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
+)
+SessionLocal = sessionmaker(bind=engine)
+
+class Base(DeclarativeBase): pass
+
+class Organisation(Base):
+    __tablename__ = "organisations"
+    id = Column(String, primary_key=True)
+    name = Column(String)
+    account_number = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class MappingRule(Base):
+    __tablename__ = "mapping_rules"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String)
+    pattern = Column(String)
+    division = Column(String)
+    priority = Column(Integer, default=0)
+
+class GLAccount(Base):
+    __tablename__ = "gl_accounts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String)
+    division = Column(String)
+    gl_code = Column(String)
+
+class BillUpload(Base):
+    __tablename__ = "bill_uploads"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String)
+    filename = Column(String)
+    sha256 = Column(String, unique=True)
+    statement_date = Column(String)
+    account_total = Column(Float, default=0)
+    subscriber_count = Column(Integer, default=0)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+class InvoiceLine(Base):
+    __tablename__ = "invoice_lines"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bill_id = Column(Integer)
+    org_id = Column(String)
+    invoice_number = Column(String)
+    subscriber_number = Column(String)
+    raw_name = Column(String)
+    tariff_plan = Column(String)
+    division = Column(String)
+    geography = Column(String)
+    pre_tax = Column(Float, default=0)
+    excise = Column(Float, default=0)
+    vat = Column(Float, default=0)
+    amount_due_kes = Column(Float, default=0)
+    outstanding = Column(Float, default=0)
+    cdr_count = Column(Integer, default=0)
+    is_anomaly = Column(Boolean, default=False)
+    anomaly_reason = Column(String, default="")
+
+class CDRRecord(Base):
+    __tablename__ = "cdr_records"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bill_id = Column(Integer)
+    subscriber_number = Column(String)
+    date = Column(String)
+    time = Column(String)
+    destination = Column(String)
+    duration = Column(String)
+    rate = Column(Float, default=0)
+    charge = Column(Float, default=0)
+    service_type = Column(String)
+
+
+class SubscriberProfile(Base):
+    """Persistent metadata for a subscriber line — survives across bill months."""
+    __tablename__ = "subscriber_profiles"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, index=True)
+    subscriber_number = Column(String, index=True)
+    display_name = Column(String, default="")          # human-readable alias
+    division_override = Column(String, default="")     # manual cost-centre remap
+    tags = Column(String, default="")                  # comma-separated tags
+    device_type = Column(String, default="")           # Handset | SIM | Modem | Fixed
+    tariff_override = Column(String, default="")       # admin-set expected plan
+    notes = Column(String, default="")
+    is_active = Column(Boolean, default=True)
+    first_seen_date = Column(String, default="")
+    last_seen_date = Column(String, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class BudgetEntry(Base):
+    """Monthly budget target per division for an org."""
+    __tablename__ = "budget_entries"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, index=True)
+    division = Column(String)
+    period = Column(String)   # "YYYY-MM"
+    budget_kes = Column(Float, default=0)
+    headcount = Column(Integer, default=0)
+
+class SpendAlert(Base):
+    """Per-subscriber or per-division spend ceiling."""
+    __tablename__ = "spend_alerts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String)
+    scope = Column(String)          # "subscriber" | "division" | "total"
+    scope_value = Column(String)    # subscriber number, division name, or ""
+    threshold_kes = Column(Float, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Annotation(Base):
+    """User comment attached to any invoice line or anomaly."""
+    __tablename__ = "annotations"
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    org_id     = Column(String, index=True)
+    bill_id    = Column(Integer, index=True)
+    ref_type   = Column(String)          # "line" | "anomaly" | "division" | "bill"
+    ref_id     = Column(String)          # subscriber_number, division name, or ""
+    text       = Column(Text)
+    author     = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class AuditLog(Base):
+    """Immutable record of every user action."""
+    __tablename__ = "audit_logs"
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    org_id     = Column(String, index=True)
+    action     = Column(String)          # e.g. "bill.upload", "subscriber.update"
+    actor      = Column(String, default="user")
+    detail     = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class WebhookConfig(Base):
+    """Outbound webhook URL called after each bill import."""
+    __tablename__ = "webhook_configs"
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    org_id     = Column(String)
+    url        = Column(String)
+    secret     = Column(String, default="")   # optional HMAC secret
+    events     = Column(String, default="bill.imported")  # comma-separated
+    is_active  = Column(Boolean, default=True)
+    last_fired = Column(DateTime, nullable=True)
+
+Base.metadata.create_all(engine)
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(title="TelecomLens", version="3.1.0")
+# CORS: wildcard is fine for a local single-machine tool.
+# Set CORS_ORIGINS=http://myserver:8000 in .env to restrict in production.
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def find_pdftotext() -> str:
+    if platform.system() == "Windows":
+        local = Path(settings.poppler_path) / "Library" / "bin" / "pdftotext.exe"
+        if local.exists():
+            return str(local)
+        for p in Path(settings.poppler_path).rglob("pdftotext.exe"):
+            return str(p)
+    path = shutil.which("pdftotext")
+    if path:
+        return path
+    raise RuntimeError("pdftotext not found. Install poppler-utils (Linux) or run install.bat (Windows).")
+
+
+def pdf_to_text(pdf_bytes: bytes) -> str:
+    pdftotext = find_pdftotext()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(pdf_bytes)
+        tmp = f.name
+    try:
+        r = subprocess.run([pdftotext, "-layout", tmp, "-"],
+                           capture_output=True, timeout=120)
+        if r.returncode != 0:
+            raise HTTPException(400, f"pdftotext error: {r.stderr.decode()[:500]}")
+        return r.stdout.decode("utf-8", errors="replace")
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def get_org_rules(org_id: str, db: Session) -> list[tuple[str, str]]:
+    rows = db.query(MappingRule).filter_by(org_id=org_id).order_by(MappingRule.priority.desc()).all()
+    return [(r.pattern, r.division) for r in rows]
+
+
+def detect_anomalies(inv: dict) -> tuple[bool, str]:
+    reasons = []
+    if inv.get("amount_due_kes", 0) == 0 and inv.get("cdr_count", 0) > 0:
+        reasons.append("zero charge with activity")
+    if inv.get("amount_due_kes", 0) > 50000:
+        reasons.append("high spend >50K")
+    if inv.get("cdr_count", 0) > 1000:
+        reasons.append("high CDR count")
+    if inv.get("division") == "Unclassified":
+        reasons.append("unclassified line")
+    return bool(reasons), "; ".join(reasons)
+
+
+def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpload:
+    org_id = re.sub(r"[^a-z0-9]", "_", bill_data["org_account"].lower()) or "default"
+    org = db.query(Organisation).filter_by(id=org_id).first()
+    if not org:
+        org = Organisation(id=org_id, name=bill_data["org_name"],
+                           account_number=bill_data["org_account"])
+        db.add(org)
+    rules = get_org_rules(org_id, db)
+    bill = BillUpload(
+        org_id=org_id, filename=filename, sha256=sha,
+        statement_date=bill_data["statement_date"],
+        account_total=bill_data["account_total"],
+        subscriber_count=len(bill_data["invoices"]),
+    )
+    db.add(bill)
+    db.flush()
+    for inv in bill_data["invoices"]:
+        existing = db.query(InvoiceLine).filter_by(invoice_number=inv["invoice_number"]).first()
+        if existing:
+            continue
+        is_anom, reason = detect_anomalies(inv)
+        line = InvoiceLine(
+            bill_id=bill.id, org_id=org_id,
+            invoice_number=inv["invoice_number"],
+            subscriber_number=inv["subscriber_number"],
+            raw_name=inv["raw_name"],
+            tariff_plan=inv["tariff_plan"],
+            division=classify_name(inv["raw_name"], rules) if rules else inv["division"],
+            geography=inv["geography"],
+            pre_tax=inv["pre_tax"], excise=inv["excise"],
+            vat=inv["vat"], amount_due_kes=inv["amount_due_kes"],
+            outstanding=inv["outstanding"], cdr_count=inv["cdr_count"],
+            is_anomaly=is_anom, anomaly_reason=reason,
+        )
+        db.add(line)
+        for cdr in inv.get("cdr_records", [])[:5000]:
+            db.add(CDRRecord(
+                bill_id=bill.id, subscriber_number=inv["subscriber_number"],
+                date=cdr["date"], time=cdr["time"], destination=cdr["destination"],
+                duration=cdr["duration"], rate=cdr["rate"], charge=cdr["charge"],
+                service_type=cdr["service_type"],
+            ))
+    # ── Upsert subscriber profiles (lifecycle tracking) ────────────────
+    for inv in bill_data["invoices"]:
+        if not inv.get("subscriber_number"):
+            continue
+        sub_num = inv["subscriber_number"]
+        profile = db.query(SubscriberProfile).filter_by(
+            org_id=org_id, subscriber_number=sub_num).first()
+        if not profile:
+            profile = SubscriberProfile(
+                org_id=org_id,
+                subscriber_number=sub_num,
+                display_name=inv.get("raw_name", ""),
+                first_seen_date=bill_data.get("statement_date", ""),
+                last_seen_date=bill_data.get("statement_date", ""),
+                is_active=True,
+            )
+            db.add(profile)
+        else:
+            # Update last seen; mark active
+            sd = bill_data.get("statement_date", "")
+            if sd and sd > (profile.last_seen_date or ""):
+                profile.last_seen_date = sd
+            profile.is_active = True
+
+    db.commit()
+
+    # Fire webhooks asynchronously (best-effort)
+    _fire_webhooks_bg(org_id, bill, db)
+
+    # Audit log
+    db.add(AuditLog(org_id=org_id, action="bill.import",
+                    detail=f"Imported {filename}, {len(bill_data['invoices'])} lines"))
+    db.commit()
+    return bill
+
+
+def _fire_webhooks_bg(org_id: str, bill: "BillUpload", db: Session):
+    """Best-effort synchronous webhook call (runs in same thread, non-blocking on error)."""
+    hooks = db.query(WebhookConfig).filter_by(org_id=org_id, is_active=True).all()
+    if not hooks:
+        return
+    import threading, json as _json, hmac as _hmac, hashlib as _hl
+    payload = _json.dumps({
+        "event": "bill.imported",
+        "org_id": org_id,
+        "bill_id": bill.id,
+        "statement_date": bill.statement_date,
+        "account_total": bill.account_total,
+        "subscriber_count": bill.subscriber_count,
+    }).encode()
+    def _send(hook):
+        try:
+            import httpx
+            headers = {"Content-Type": "application/json", "X-TelecomLens-Event": "bill.imported"}
+            if hook.secret:
+                sig = _hmac.new(hook.secret.encode(), payload, _hl.sha256).hexdigest()
+                headers["X-TelecomLens-Signature"] = f"sha256={sig}"
+            httpx.post(hook.url, content=payload, headers=headers, timeout=8)
+            hook.last_fired = datetime.utcnow()
+            db.commit()
+            logger.info("Webhook fired: %s → %s", org_id, hook.url)
+        except Exception as exc:
+            logger.warning("Webhook failed (%s): %s", hook.url, exc)
+    for hook in hooks:
+        threading.Thread(target=_send, args=(hook,), daemon=True).start()
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/health")
+def health():
+    try:
+        pt = find_pdftotext(); ok = True
+    except RuntimeError as e:
+        pt = str(e); ok = False
+    return {"status": "ok", "platform": platform.system(), "pdftotext_found": ok,
+            "pdftotext_path": pt}
+
+
+@app.get("/api/orgs")
+def list_orgs(db: Session = Depends(get_db)):
+    orgs = db.query(Organisation).all()
+    return [{"id": o.id, "name": o.name, "account_number": o.account_number} for o in orgs]
+
+
+@app.get("/api/bills")
+def list_bills(org_id: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(BillUpload)
+    if org_id:
+        q = q.filter_by(org_id=org_id)
+    bills = q.order_by(BillUpload.statement_date.desc()).all()
+    return [{"id": b.id, "org_id": b.org_id, "filename": b.filename,
+             "statement_date": b.statement_date, "account_total": b.account_total,
+             "subscriber_count": b.subscriber_count,
+             "uploaded_at": b.uploaded_at.isoformat() if b.uploaded_at else ""} for b in bills]
+
+
+@app.post("/api/bills/upload")
+async def upload_bill(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    data = await file.read()
+    sha = hashlib.sha256(data).hexdigest()
+    existing = db.query(BillUpload).filter_by(sha256=sha).first()
+    if existing:
+        return {"status": "duplicate", "bill_id": existing.id}
+    text = pdf_to_text(data)
+    bill_data = parse_bill(text)
+    bill = store_bill(bill_data, file.filename or "upload.pdf", sha, db)
+    return {"status": "ok", "bill_id": bill.id, "org_id": bill.org_id,
+            "subscriber_count": bill.subscriber_count}
+
+
+@app.post("/api/bills/import-folder")
+def import_folder(folder: str = Body(..., embed=True), db: Session = Depends(get_db)):
+    p = Path(folder).resolve()
+    if not p.exists():
+        raise HTTPException(404, f"Folder not found: {folder}")
+    results = []
+    for pdf in sorted(p.glob("*.pdf")):
+        data = pdf.read_bytes()
+        sha = hashlib.sha256(data).hexdigest()
+        existing = db.query(BillUpload).filter_by(sha256=sha).first()
+        if existing:
+            results.append({"file": pdf.name, "status": "duplicate", "bill_id": existing.id})
+            continue
+        try:
+            text = pdf_to_text(data)
+            bill_data = parse_bill(text)
+            bill = store_bill(bill_data, pdf.name, sha, db)
+            results.append({"file": pdf.name, "status": "ok", "bill_id": bill.id})
+        except Exception as e:
+            results.append({"file": pdf.name, "status": "error", "error": str(e)[:200]})
+    return results
+
+
+@app.get("/api/bills/{bill_id}/summary")
+def bill_summary(bill_id: int, db: Session = Depends(get_db)):
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404, "Bill not found")
+    lines = db.query(InvoiceLine).filter_by(bill_id=bill_id).all()
+    total = sum(l.amount_due_kes for l in lines)
+    pre_tax = sum(l.pre_tax for l in lines)
+    excise = sum(l.excise for l in lines)
+    vat = sum(l.vat for l in lines)
+    outstanding = sum(l.outstanding for l in lines)
+    anomaly_count = sum(1 for l in lines if l.is_anomaly)
+    divisions = {}
+    for l in lines:
+        divisions[l.division] = divisions.get(l.division, 0) + l.amount_due_kes
+    top_division = max(divisions, key=divisions.get) if divisions else ""
+    return {
+        "bill_id": bill_id, "org_id": bill.org_id, "filename": bill.filename,
+        "statement_date": bill.statement_date, "account_total": round(total, 2),
+        "pre_tax_total": round(pre_tax, 2), "excise_total": round(excise, 2),
+        "vat_total": round(vat, 2), "outstanding_total": round(outstanding, 2),
+        "subscriber_count": len(lines), "anomaly_count": anomaly_count,
+        "top_division": top_division,
+        "divisions": {k: round(v, 2) for k, v in sorted(divisions.items(), key=lambda x: -x[1])},
+    }
+
+
+@app.get("/api/bills/{bill_id}/divisions")
+def bill_divisions(bill_id: int, db: Session = Depends(get_db)):
+    rows = (db.query(InvoiceLine.division,
+                     func.sum(InvoiceLine.amount_due_kes).label("total"),
+                     func.count(InvoiceLine.id).label("count"))
+            .filter_by(bill_id=bill_id)
+            .group_by(InvoiceLine.division)
+            .order_by(func.sum(InvoiceLine.amount_due_kes).desc()).all())
+    return [{"division": r.division, "total": round(r.total or 0, 2), "count": r.count} for r in rows]
+
+
+@app.get("/api/bills/{bill_id}/subscribers")
+def bill_subscribers(bill_id: int, search: str = "", division: str = "",
+                     page: int = 1, limit: int = 50, db: Session = Depends(get_db)):
+    q = db.query(InvoiceLine).filter_by(bill_id=bill_id)
+    if search:
+        safe_search = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        q = q.filter(InvoiceLine.raw_name.ilike(f"%{safe_search}%") |
+                     InvoiceLine.subscriber_number.ilike(f"%{safe_search}%"))
+    if division:
+        q = q.filter_by(division=division)
+    total = q.count()
+    rows = q.order_by(InvoiceLine.amount_due_kes.desc()).offset((page - 1) * limit).limit(limit).all()
+    return {
+        "total": total, "page": page, "limit": limit,
+        "subscribers": [{
+            "subscriber_number": r.subscriber_number, "raw_name": r.raw_name,
+            "tariff_plan": r.tariff_plan, "division": r.division, "geography": r.geography,
+            "amount_due_kes": round(r.amount_due_kes, 2), "pre_tax": round(r.pre_tax, 2),
+            "excise": round(r.excise, 2), "vat": round(r.vat, 2),
+            "cdr_count": r.cdr_count, "is_anomaly": r.is_anomaly,
+            "anomaly_reason": r.anomaly_reason,
+        } for r in rows],
+    }
+
+
+@app.get("/api/bills/{bill_id}/subscriber/{sub_number}/cdr")
+def subscriber_cdr(bill_id: int, sub_number: str, limit: int = 500,
+                   db: Session = Depends(get_db)):
+    rows = (db.query(CDRRecord)
+            .filter_by(bill_id=bill_id, subscriber_number=sub_number)
+            .order_by(CDRRecord.date, CDRRecord.time)
+            .limit(min(limit, 5000)).all())
+    return [{
+        "date": r.date, "time": r.time, "destination": r.destination,
+        "duration": r.duration, "rate": r.rate,
+        "charge": round(r.charge, 2), "service_type": r.service_type,
+    } for r in rows]
+
+
+@app.get("/api/bills/{bill_id}/anomalies")
+def bill_anomalies(bill_id: int, db: Session = Depends(get_db)):
+    rows = db.query(InvoiceLine).filter_by(bill_id=bill_id, is_anomaly=True).all()
+    return [{
+        "subscriber_number": r.subscriber_number, "raw_name": r.raw_name,
+        "division": r.division, "amount_due_kes": round(r.amount_due_kes, 2),
+        "anomaly_reason": r.anomaly_reason, "cdr_count": r.cdr_count,
+    } for r in rows]
+
+
+@app.get("/api/bills/{bill_id}/drilldown")
+def bill_drilldown(bill_id: int,
+                   by: str = Query(..., description="division|subscriber|tariff|anomaly|geography|unclassified"),
+                   value: str = Query("", description="Value to filter on"),
+                   db: Session = Depends(get_db)):
+    """Return line items for a specific field/value combination — powers the drill-down panel."""
+    q = db.query(InvoiceLine).filter_by(bill_id=bill_id)
+    if by == "division":
+        q = q.filter_by(division=value)
+    elif by == "subscriber":
+        q = q.filter_by(subscriber_number=value)
+    elif by == "tariff":
+        safe_val = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        q = q.filter(InvoiceLine.tariff_plan.ilike(f"%{safe_val}%"))
+    elif by == "anomaly":
+        q = q.filter_by(is_anomaly=True)
+    elif by == "geography":
+        q = q.filter_by(geography=value)
+    elif by == "unclassified":
+        q = q.filter_by(division="Unclassified")
+
+    rows = q.order_by(InvoiceLine.amount_due_kes.desc()).limit(200).all()
+    total_amount = sum(r.amount_due_kes for r in rows)
+    total_count = len(rows)
+
+    # Monthly history for sparkline (reuses across all bills in same org)
+    org_id = db.query(BillUpload.org_id).filter_by(id=bill_id).scalar()
+    history = []
+    if org_id and by == "division" and value:
+        bills = db.query(BillUpload).filter_by(org_id=org_id).order_by(BillUpload.statement_date).all()
+        for b in bills:
+            amt = (db.query(func.sum(InvoiceLine.amount_due_kes))
+                   .filter_by(bill_id=b.id, division=value).scalar() or 0)
+            history.append({"date": b.statement_date, "amount": round(float(amt), 2)})
+
+    return {
+        "by": by, "value": value, "total_amount": round(total_amount, 2),
+        "count": total_count, "history": history,
+        "lines": [{
+            "subscriber_number": r.subscriber_number,
+            "raw_name": r.raw_name,
+            "tariff_plan": r.tariff_plan,
+            "division": r.division,
+            "geography": r.geography,
+            "pre_tax": round(r.pre_tax, 2),
+            "excise": round(r.excise, 2),
+            "vat": round(r.vat, 2),
+            "amount_due_kes": round(r.amount_due_kes, 2),
+            "cdr_count": r.cdr_count,
+            "is_anomaly": r.is_anomaly,
+            "anomaly_reason": r.anomaly_reason,
+        } for r in rows],
+    }
+
+
+@app.get("/api/bills/{bill_id}/chargeback.csv")
+def chargeback_csv(bill_id: int, db: Session = Depends(get_db)):
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404)
+    gl_map = {g.division: g.gl_code for g in db.query(GLAccount).filter_by(org_id=bill.org_id).all()}
+    rows = db.query(InvoiceLine).filter_by(bill_id=bill_id).order_by(InvoiceLine.division, InvoiceLine.raw_name).all()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Subscriber Number", "Name", "Division", "GL Account",
+                "Tariff Plan", "Pre-Tax (KES)", "Excise (KES)", "VAT (KES)",
+                "Amount Due (KES)", "Outstanding (KES)", "Anomaly"])
+    for r in rows:
+        w.writerow([r.subscriber_number, r.raw_name, r.division,
+                    gl_map.get(r.division, ""), r.tariff_plan,
+                    r.pre_tax, r.excise, r.vat, r.amount_due_kes,
+                    r.outstanding, "Yes" if r.is_anomaly else ""])
+    buf.seek(0)
+    return StreamingResponse(iter([buf.getvalue()]),
+                             media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="chargeback_{bill_id}.csv"'})
+
+
+@app.get("/api/trends")
+def trends(org_id: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(BillUpload)
+    if org_id:
+        q = q.filter_by(org_id=org_id)
+    bills = q.order_by(BillUpload.statement_date).all()
+    result = []
+    for b in bills:
+        lines = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
+        anomalies = sum(1 for l in lines if l.is_anomaly)
+        divisions = {}
+        for l in lines:
+            divisions[l.division] = round((divisions.get(l.division, 0) + l.amount_due_kes), 2)
+        result.append({
+            "bill_id": b.id, "statement_date": b.statement_date,
+            "account_total": round(b.account_total, 2),
+            "subscriber_count": b.subscriber_count,
+            "anomaly_count": anomalies,
+            "divisions": divisions,
+        })
+    return result
+
+
+@app.get("/api/trends/top-spenders")
+def top_spenders(org_id: Optional[str] = None, limit: int = 15, db: Session = Depends(get_db)):
+    q_bills = db.query(BillUpload)
+    if org_id:
+        q_bills = q_bills.filter_by(org_id=org_id)
+    bills = q_bills.order_by(BillUpload.statement_date).all()
+    bill_map = {b.id: b.statement_date for b in bills}
+    org_filter = InvoiceLine.org_id == org_id if org_id else True
+    totals = (db.query(InvoiceLine.subscriber_number, InvoiceLine.raw_name, InvoiceLine.division,
+                       func.sum(InvoiceLine.amount_due_kes).label("total"),
+                       func.count(InvoiceLine.bill_id.distinct()).label("month_count"))
+              .filter(org_filter)
+              .group_by(InvoiceLine.subscriber_number, InvoiceLine.raw_name, InvoiceLine.division)
+              .order_by(func.sum(InvoiceLine.amount_due_kes).desc()).limit(limit).all())
+    result = []
+    for t in totals:
+        hist = (db.query(InvoiceLine.bill_id, InvoiceLine.amount_due_kes, InvoiceLine.tariff_plan)
+                .filter_by(subscriber_number=t.subscriber_number)
+                .order_by(InvoiceLine.bill_id).all())
+        result.append({
+            "subscriber_number": t.subscriber_number, "raw_name": t.raw_name,
+            "division": t.division, "total_all_months": round(t.total or 0, 2),
+            "month_count": t.month_count,
+            "history": [{"statement_date": bill_map.get(r.bill_id, ""),
+                         "amount_kes": r.amount_due_kes, "tariff_plan": r.tariff_plan}
+                        for r in hist],
+        })
+    return result
+
+
+@app.get("/api/orgs/{org_id}/rules")
+def get_rules(org_id: str, db: Session = Depends(get_db)):
+    rules = db.query(MappingRule).filter_by(org_id=org_id).all()
+    return [{"id": r.id, "pattern": r.pattern, "division": r.division, "priority": r.priority} for r in rules]
+
+
+@app.post("/api/orgs/{org_id}/rules")
+def add_rule(org_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    rule = MappingRule(org_id=org_id, pattern=body["pattern"],
+                       division=body["division"], priority=body.get("priority", 0))
+    db.add(rule); db.commit()
+    return {"id": rule.id}
+
+
+@app.delete("/api/orgs/{org_id}/rules/{rule_id}")
+def delete_rule(org_id: str, rule_id: int, db: Session = Depends(get_db)):
+    db.query(MappingRule).filter_by(id=rule_id, org_id=org_id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/bills/{bill_id}/report.docx")
+def download_report(bill_id: int, db: Session = Depends(get_db)):
+    """Generate and return a .docx executive report for the given bill."""
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404, "Bill not found")
+
+    org = db.query(Organisation).filter_by(id=bill.org_id).first()
+    lines = db.query(InvoiceLine).filter_by(bill_id=bill_id).all()
+
+    total       = sum(l.amount_due_kes for l in lines)
+    pre_tax     = sum(l.pre_tax        for l in lines)
+    excise      = sum(l.excise         for l in lines)
+    vat         = sum(l.vat            for l in lines)
+    outstanding = sum(l.outstanding    for l in lines)
+    anomaly_count = sum(1 for l in lines if l.is_anomaly)
+
+    divisions_raw = {}
+    division_counts = {}
+    for l in lines:
+        divisions_raw[l.division] = divisions_raw.get(l.division, 0) + l.amount_due_kes
+        division_counts[l.division] = division_counts.get(l.division, 0) + 1
+    divisions = [{"division": k, "total": round(v, 2), "count": division_counts[k]}
+                 for k, v in sorted(divisions_raw.items(), key=lambda x: -x[1])]
+    top_division = divisions[0]["division"] if divisions else ""
+
+    anomalies = [{"subscriber_number": l.subscriber_number, "raw_name": l.raw_name,
+                  "division": l.division, "amount_due_kes": round(l.amount_due_kes, 2),
+                  "anomaly_reason": l.anomaly_reason, "cdr_count": l.cdr_count}
+                 for l in lines if l.is_anomaly]
+
+    top_subscribers = [{"subscriber_number": l.subscriber_number, "raw_name": l.raw_name,
+                        "division": l.division, "tariff_plan": l.tariff_plan,
+                        "amount_due_kes": round(l.amount_due_kes, 2)}
+                       for l in sorted(lines, key=lambda x: -x.amount_due_kes)[:15]]
+
+    # Multi-month trend from same org
+    trend_bills = (db.query(BillUpload).filter_by(org_id=bill.org_id)
+                   .order_by(BillUpload.statement_date).all())
+    trends = []
+    for b in trend_bills:
+        b_lines = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
+        trends.append({
+            "statement_date":   b.statement_date,
+            "account_total":    round(sum(l.amount_due_kes for l in b_lines), 2),
+            "subscriber_count": len(b_lines),
+            "anomaly_count":    sum(1 for l in b_lines if l.is_anomaly),
+        })
+
+    report_data = {
+        "org_name":       org.name if org else bill.org_id,
+        "account_number": org.account_number if org else "",
+        "statement_date": bill.statement_date,
+        "top_division":   top_division,
+        "summary": {
+            "account_total":    round(total, 2),
+            "pre_tax_total":    round(pre_tax, 2),
+            "excise_total":     round(excise, 2),
+            "vat_total":        round(vat, 2),
+            "outstanding_total":round(outstanding, 2),
+            "subscriber_count": len(lines),
+            "anomaly_count":    anomaly_count,
+        },
+        "divisions":        divisions,
+        "anomalies":        anomalies,
+        "top_subscribers":  top_subscribers,
+        "trends":           trends,
+    }
+
+    try:
+        from report import generate_report
+    except ImportError:
+        raise HTTPException(500,
+            "python-docx is not installed. Run: pip install python-docx --break-system-packages")
+
+    try:
+        docx_bytes = generate_report(report_data)
+    except Exception as e:
+        raise HTTPException(500, f"Report generation failed: {e}")
+
+    safe_date = (bill.statement_date or "").replace("/", "-").replace(" ", "_")
+    filename  = f"TelecomLens_{bill.org_id}_{safe_date}.docx"
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REPORTING & EXPORT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/bills/{bill_id}/report-custom.docx")
+def download_custom_report(bill_id: int, body: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Custom report builder. body fields (all optional, default True):
+      include_summary, include_tax, include_divisions, include_subscribers,
+      include_anomalies, include_trends, include_annotations,
+      divisions_filter: [list of division names to include, empty = all],
+      top_n_subscribers: int (default 15)
+    """
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404, "Bill not found")
+
+    org = db.query(Organisation).filter_by(id=bill.org_id).first()
+    lines_q = db.query(InvoiceLine).filter_by(bill_id=bill_id)
+
+    div_filter = body.get("divisions_filter", [])
+    if div_filter:
+        lines_q = lines_q.filter(InvoiceLine.division.in_(div_filter))
+    lines = lines_q.all()
+
+    annotations = db.query(Annotation).filter_by(bill_id=bill_id).order_by(Annotation.created_at).all()
+    ann_map: dict[str, list] = {}
+    for a in annotations:
+        ann_map.setdefault(a.ref_id, []).append({"text": a.text, "author": a.author,
+                                                  "created_at": str(a.created_at)[:16]})
+
+    total       = sum(l.amount_due_kes for l in lines)
+    pre_tax     = sum(l.pre_tax for l in lines)
+    excise      = sum(l.excise for l in lines)
+    vat         = sum(l.vat for l in lines)
+    outstanding = sum(l.outstanding for l in lines)
+
+    divs_raw: dict[str, float] = {}
+    div_counts: dict[str, int] = {}
+    for l in lines:
+        divs_raw[l.division] = divs_raw.get(l.division, 0) + l.amount_due_kes
+        div_counts[l.division] = div_counts.get(l.division, 0) + 1
+    divisions = [{"division": k, "total": round(v, 2), "count": div_counts[k]}
+                 for k, v in sorted(divs_raw.items(), key=lambda x: -x[1])]
+
+    top_n = int(body.get("top_n_subscribers", 15))
+    top_subscribers = [
+        {"subscriber_number": l.subscriber_number, "raw_name": l.raw_name,
+         "division": l.division, "tariff_plan": l.tariff_plan,
+         "amount_due_kes": round(l.amount_due_kes, 2),
+         "annotations": ann_map.get(l.subscriber_number, [])}
+        for l in sorted(lines, key=lambda x: -x.amount_due_kes)[:top_n]
+    ]
+    anomalies = [
+        {"subscriber_number": l.subscriber_number, "raw_name": l.raw_name,
+         "division": l.division, "amount_due_kes": round(l.amount_due_kes, 2),
+         "anomaly_reason": l.anomaly_reason, "cdr_count": l.cdr_count,
+         "annotations": ann_map.get(l.subscriber_number, [])}
+        for l in lines if l.is_anomaly
+    ]
+
+    trend_bills = (db.query(BillUpload).filter_by(org_id=bill.org_id)
+                   .order_by(BillUpload.statement_date).all())
+    trends = []
+    for b in trend_bills:
+        bl = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
+        trends.append({"statement_date": b.statement_date,
+                       "account_total": round(sum(x.amount_due_kes for x in bl), 2),
+                       "subscriber_count": len(bl),
+                       "anomaly_count": sum(1 for x in bl if x.is_anomaly)})
+
+    report_data = {
+        "org_name": org.name if org else bill.org_id,
+        "account_number": org.account_number if org else "",
+        "statement_date": bill.statement_date,
+        "top_division": divisions[0]["division"] if divisions else "",
+        "summary": {
+            "account_total": round(total, 2), "pre_tax_total": round(pre_tax, 2),
+            "excise_total": round(excise, 2), "vat_total": round(vat, 2),
+            "outstanding_total": round(outstanding, 2),
+            "subscriber_count": len(lines),
+            "anomaly_count": sum(1 for l in lines if l.is_anomaly),
+        },
+        "divisions": divisions if body.get("include_divisions", True) else [],
+        "anomalies": anomalies if body.get("include_anomalies", True) else [],
+        "top_subscribers": top_subscribers if body.get("include_subscribers", True) else [],
+        "trends": trends if body.get("include_trends", True) else [],
+        "options": {
+            "include_summary": body.get("include_summary", True),
+            "include_tax": body.get("include_tax", True),
+            "include_annotations": body.get("include_annotations", True),
+            "division_filter_label": ", ".join(div_filter) if div_filter else "All divisions",
+        },
+    }
+
+    try:
+        from report import generate_report
+    except ImportError:
+        raise HTTPException(500, "python-docx not installed. Run: pip install python-docx")
+    try:
+        docx_bytes = generate_report(report_data)
+    except Exception as e:
+        raise HTTPException(500, f"Report generation failed: {e}")
+
+    safe = (bill.statement_date or "").replace("/", "-").replace(" ", "_")
+    suffix = "_custom" if div_filter else ""
+    filename = f"TelecomLens_{bill.org_id}_{safe}{suffix}.docx"
+
+    db.add(AuditLog(org_id=bill.org_id, action="report.export",
+                    detail=f"Custom report bill={bill_id}, divs={div_filter or 'all'}"))
+    db.commit()
+
+    return StreamingResponse(io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/bills/{bill_id}/chargeback-excel.xlsx")
+def chargeback_excel(bill_id: int, db: Session = Depends(get_db)):
+    """
+    Multi-sheet Excel workbook: one sheet per division + a Summary sheet.
+    Each sheet has the subscriber lines for that division.
+    """
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise HTTPException(500, "openpyxl not installed. Run: pip install openpyxl")
+
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404)
+
+    gl_map = {g.division: g.gl_code
+              for g in db.query(GLAccount).filter_by(org_id=bill.org_id).all()}
+    lines = (db.query(InvoiceLine).filter_by(bill_id=bill_id)
+             .order_by(InvoiceLine.division, InvoiceLine.amount_due_kes.desc()).all())
+    annotations = db.query(Annotation).filter_by(bill_id=bill_id).all()
+    ann_map = {a.ref_id: a.text for a in annotations}
+
+    # Group lines by division
+    from collections import defaultdict
+    by_div: dict[str, list] = defaultdict(list)
+    for l in lines:
+        by_div[l.division].append(l)
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)  # remove default sheet
+
+    BLUE_FILL = PatternFill("solid", fgColor="2563EB")
+    LIGHT_FILL = PatternFill("solid", fgColor="DBEAFE")
+    HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    BODY_FONT = Font(name="Calibri", size=10)
+    ANOM_FILL = PatternFill("solid", fgColor="FEE2E2")
+    thin = Side(style="thin", color="CCCCCC")
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    COLS = ["Subscriber Number", "Name", "Division", "GL Account", "Tariff Plan",
+            "Pre-Tax (KES)", "Excise (KES)", "VAT (KES)", "Amount Due (KES)",
+            "Outstanding (KES)", "CDR Count", "Anomaly", "Notes"]
+    WIDTHS = [18, 28, 16, 12, 24, 14, 12, 12, 16, 16, 10, 8, 30]
+
+    def _write_sheet(ws, rows_data, title_label):
+        ws.freeze_panes = "A2"
+        # Header
+        for col_i, (hdr, w) in enumerate(zip(COLS, WIDTHS), start=1):
+            cell = ws.cell(1, col_i, hdr)
+            cell.font = HDR_FONT
+            cell.fill = BLUE_FILL
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = BORDER
+            ws.column_dimensions[get_column_letter(col_i)].width = w
+        ws.row_dimensions[1].height = 20
+        # Data
+        for ri, l in enumerate(rows_data, start=2):
+            is_anom = l.is_anomaly
+            vals = [l.subscriber_number, l.raw_name, l.division,
+                    gl_map.get(l.division, ""), l.tariff_plan or "",
+                    round(l.pre_tax, 2), round(l.excise, 2), round(l.vat, 2),
+                    round(l.amount_due_kes, 2), round(l.outstanding, 2),
+                    l.cdr_count, "Yes" if is_anom else "",
+                    ann_map.get(l.subscriber_number, "")]
+            fill = ANOM_FILL if is_anom else (LIGHT_FILL if ri % 2 == 0 else None)
+            for ci, v in enumerate(vals, start=1):
+                cell = ws.cell(ri, ci, v)
+                cell.font = BODY_FONT
+                cell.border = BORDER
+                if fill:
+                    cell.fill = fill
+        # Totals row
+        total_row = len(rows_data) + 2
+        ws.cell(total_row, 1, "TOTAL").font = Font(bold=True, size=10)
+        for ci, col_name in enumerate(COLS, start=1):
+            if col_name in ("Pre-Tax (KES)", "Excise (KES)", "VAT (KES)",
+                            "Amount Due (KES)", "Outstanding (KES)"):
+                col_ltr = get_column_letter(ci)
+                ws.cell(total_row, ci,
+                        f"=SUM({col_ltr}2:{col_ltr}{total_row-1})"
+                        ).font = Font(bold=True, size=10)
+
+    # Per-division sheets
+    for div in sorted(by_div.keys()):
+        safe_name = re.sub(r'[\\/:*?<>|]', '_', div)[:31]
+        ws = wb.create_sheet(title=safe_name)
+        _write_sheet(ws, by_div[div], div)
+
+    # Summary sheet (first)
+    ws_sum = wb.create_sheet(title="Summary", index=0)
+    ws_sum.freeze_panes = "A2"
+    sum_cols = ["Division", "GL Account", "Subscribers",
+                "Amount Due (KES)", "% of Total", "Anomalies"]
+    sum_widths = [20, 14, 12, 18, 12, 10]
+    for ci, (h, w) in enumerate(zip(sum_cols, sum_widths), start=1):
+        c = ws_sum.cell(1, ci, h)
+        c.font = HDR_FONT; c.fill = BLUE_FILL
+        c.alignment = Alignment(horizontal="center"); c.border = BORDER
+        ws_sum.column_dimensions[get_column_letter(ci)].width = w
+    grand_total = sum(l.amount_due_kes for l in lines) or 1
+    for ri, div in enumerate(sorted(by_div.keys()), start=2):
+        div_lines = by_div[div]
+        div_total = sum(l.amount_due_kes for l in div_lines)
+        div_anom  = sum(1 for l in div_lines if l.is_anomaly)
+        vals = [div, gl_map.get(div, ""), len(div_lines),
+                round(div_total, 2), f"{div_total/grand_total*100:.1f}%", div_anom]
+        for ci, v in enumerate(vals, start=1):
+            c = ws_sum.cell(ri, ci, v)
+            c.font = BODY_FONT; c.border = BORDER
+            if ri % 2 == 0:
+                c.fill = LIGHT_FILL
+    # Grand total
+    tr = len(by_div) + 2
+    ws_sum.cell(tr, 1, "GRAND TOTAL").font = Font(bold=True, size=10)
+    ws_sum.cell(tr, 3, len(lines)).font = Font(bold=True)
+    ws_sum.cell(tr, 4, round(sum(l.amount_due_kes for l in lines), 2)).font = Font(bold=True)
+    ws_sum.cell(tr, 6, sum(1 for l in lines if l.is_anomaly)).font = Font(bold=True)
+
+    buf = io.BytesIO()
+    wb.save(buf); buf.seek(0)
+
+    safe_date = (bill.statement_date or "").replace("/", "-").replace(" ", "_")
+    filename = f"TelecomLens_Chargeback_{bill.org_id}_{safe_date}.xlsx"
+
+    db.add(AuditLog(org_id=bill.org_id, action="report.excel",
+                    detail=f"Excel chargeback bill={bill_id}"))
+    db.commit()
+
+    return StreamingResponse(buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ─── Annotation endpoints ─────────────────────────────────────────────────────
+
+@app.get("/api/bills/{bill_id}/annotations")
+def get_annotations(bill_id: int, ref_id: str = "", db: Session = Depends(get_db)):
+    q = db.query(Annotation).filter_by(bill_id=bill_id)
+    if ref_id:
+        q = q.filter_by(ref_id=ref_id)
+    rows = q.order_by(Annotation.created_at).all()
+    return [{"id": r.id, "ref_type": r.ref_type, "ref_id": r.ref_id,
+             "text": r.text, "author": r.author,
+             "created_at": str(r.created_at)[:16]} for r in rows]
+
+
+@app.post("/api/bills/{bill_id}/annotations")
+def add_annotation(bill_id: int, body: dict = Body(...), db: Session = Depends(get_db)):
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404)
+    ann = Annotation(
+        org_id=bill.org_id, bill_id=bill_id,
+        ref_type=body.get("ref_type", "line"),
+        ref_id=body.get("ref_id", ""),
+        text=body.get("text", "").strip(),
+        author=body.get("author", "user"),
+    )
+    db.add(ann); db.commit()
+    db.add(AuditLog(org_id=bill.org_id, action="annotation.add",
+                    detail=f"bill={bill_id} ref={body.get('ref_id','')}"))
+    db.commit()
+    return {"id": ann.id}
+
+
+@app.delete("/api/bills/{bill_id}/annotations/{ann_id}")
+def delete_annotation(bill_id: int, ann_id: int, db: Session = Depends(get_db)):
+    ann = db.query(Annotation).filter_by(id=ann_id, bill_id=bill_id).first()
+    if not ann:
+        raise HTTPException(404)
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    db.delete(ann); db.commit()
+    if bill:
+        db.add(AuditLog(org_id=bill.org_id, action="annotation.delete",
+                        detail=f"bill={bill_id} ann={ann_id}"))
+        db.commit()
+    return {"ok": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA & INTEGRATIONS ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/orgs/{org_id}/audit-log")
+def get_audit_log(
+    org_id: str,
+    limit: int = 100,
+    action: str = "",
+    db: Session = Depends(get_db),
+):
+    q = db.query(AuditLog).filter_by(org_id=org_id)
+    if action:
+        q = q.filter(AuditLog.action.ilike(f"%{action}%"))
+    rows = q.order_by(AuditLog.created_at.desc()).limit(min(limit, 500)).all()
+    return [{"id": r.id, "action": r.action, "actor": r.actor,
+             "detail": r.detail, "created_at": str(r.created_at)[:19]} for r in rows]
+
+
+@app.get("/api/orgs/{org_id}/webhooks")
+def list_webhooks(org_id: str, db: Session = Depends(get_db)):
+    rows = db.query(WebhookConfig).filter_by(org_id=org_id).all()
+    return [{"id": r.id, "url": r.url, "events": r.events,
+             "is_active": r.is_active,
+             "last_fired": str(r.last_fired)[:16] if r.last_fired else None} for r in rows]
+
+
+@app.post("/api/orgs/{org_id}/webhooks")
+def add_webhook(org_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    wh = WebhookConfig(
+        org_id=org_id,
+        url=body["url"],
+        secret=body.get("secret", ""),
+        events=body.get("events", "bill.imported"),
+        is_active=True,
+    )
+    db.add(wh); db.commit()
+    db.add(AuditLog(org_id=org_id, action="webhook.add", detail=f"url={body['url']}"))
+    db.commit()
+    return {"id": wh.id}
+
+
+@app.delete("/api/orgs/{org_id}/webhooks/{wh_id}")
+def delete_webhook(org_id: str, wh_id: int, db: Session = Depends(get_db)):
+    db.query(WebhookConfig).filter_by(id=wh_id, org_id=org_id).delete()
+    db.add(AuditLog(org_id=org_id, action="webhook.delete", detail=f"id={wh_id}"))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/orgs/{org_id}/webhooks/{wh_id}/test")
+def test_webhook(org_id: str, wh_id: int, db: Session = Depends(get_db)):
+    """Send a test ping to a webhook URL."""
+    hook = db.query(WebhookConfig).filter_by(id=wh_id, org_id=org_id).first()
+    if not hook:
+        raise HTTPException(404)
+    try:
+        import httpx, json as _json
+        payload = _json.dumps({"event": "ping", "org_id": org_id, "test": True}).encode()
+        r = httpx.post(hook.url, content=payload,
+                       headers={"Content-Type": "application/json",
+                                "X-TelecomLens-Event": "ping"},
+                       timeout=8)
+        return {"status": r.status_code, "ok": r.is_success}
+    except Exception as e:
+        raise HTTPException(400, f"Webhook test failed: {e}")
+
+
+@app.get("/api/health/carriers")
+def detect_carrier(db: Session = Depends(get_db)):
+    """
+    Return which carriers have been detected across all imported bills,
+    based on account number patterns and org names.
+    """
+    orgs = db.query(Organisation).all()
+    results = []
+    for org in orgs:
+        carrier = _detect_carrier_from_org(org)
+        results.append({"org_id": org.id, "org_name": org.name, "carrier": carrier})
+    return results
+
+
+def _detect_carrier_from_org(org) -> str:
+    """Infer carrier from account number prefix or org name patterns."""
+    name = (org.name or "").upper()
+    acc  = (org.account_number or "").upper()
+    if re.search(r"SAFARICOM|SAF\b|\bSAF\d", acc) or "SAFARICOM" in name:
+        return "Safaricom"
+    if re.search(r"AIRTEL|AIR\b", acc) or "AIRTEL" in name:
+        return "Airtel Kenya"
+    if re.search(r"TELKOM|TKL\b", acc) or "TELKOM" in name:
+        return "Telkom Kenya"
+    if re.search(r"FAIBA|JTL\b", acc) or "FAIBA" in name:
+        return "Faiba / JTL"
+    return "Unknown"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUBSCRIBER MANAGEMENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/orgs/{org_id}/subscribers")
+def list_subscriber_profiles(
+    org_id: str,
+    search: str = "",
+    tag: str = "",
+    division: str = "",
+    page: int = 1,
+    limit: int = 60,
+    db: Session = Depends(get_db),
+):
+    """All known subscriber profiles for an org, with latest bill data joined."""
+    q = db.query(SubscriberProfile).filter_by(org_id=org_id)
+    if search:
+        safe = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        q = q.filter(
+            SubscriberProfile.subscriber_number.ilike(f"%{safe}%")
+            | SubscriberProfile.display_name.ilike(f"%{safe}%")
+        )
+    if tag:
+        safe_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        q = q.filter(SubscriberProfile.tags.ilike(f"%{safe_tag}%"))
+    if division:
+        q = q.filter(SubscriberProfile.division_override == division)
+    total = q.count()
+    profiles = q.order_by(SubscriberProfile.display_name).offset((page - 1) * limit).limit(limit).all()
+
+    # Join latest bill spend
+    result = []
+    for p in profiles:
+        latest = (
+            db.query(InvoiceLine)
+            .filter_by(org_id=org_id, subscriber_number=p.subscriber_number)
+            .order_by(InvoiceLine.bill_id.desc())
+            .first()
+        )
+        result.append({
+            "subscriber_number": p.subscriber_number,
+            "display_name": p.display_name,
+            "division_override": p.division_override,
+            "division": p.division_override or (latest.division if latest else ""),
+            "tags": p.tags,
+            "device_type": p.device_type,
+            "tariff_override": p.tariff_override,
+            "notes": p.notes,
+            "is_active": p.is_active,
+            "first_seen_date": p.first_seen_date,
+            "last_seen_date": p.last_seen_date,
+            "latest_amount_kes": round(latest.amount_due_kes, 2) if latest else 0,
+            "latest_tariff": latest.tariff_plan if latest else "",
+            "is_anomaly": latest.is_anomaly if latest else False,
+        })
+    return {"total": total, "page": page, "limit": limit, "profiles": result}
+
+
+@app.patch("/api/orgs/{org_id}/subscribers/{sub_number}")
+def update_subscriber_profile(
+    org_id: str,
+    sub_number: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Update display_name, division_override, tags, device_type, notes, tariff_override."""
+    profile = db.query(SubscriberProfile).filter_by(
+        org_id=org_id, subscriber_number=sub_number
+    ).first()
+    if not profile:
+        # Auto-create if missing (e.g. manual add before bill import)
+        profile = SubscriberProfile(org_id=org_id, subscriber_number=sub_number)
+        db.add(profile)
+    ALLOWED = {"display_name", "division_override", "tags", "device_type",
+               "notes", "tariff_override", "is_active"}
+    for k, v in body.items():
+        if k in ALLOWED:
+            setattr(profile, k, v)
+    profile.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/orgs/{org_id}/tags")
+def list_tags(org_id: str, db: Session = Depends(get_db)):
+    """Return all unique tags in use across subscribers for this org."""
+    profiles = db.query(SubscriberProfile.tags).filter_by(org_id=org_id).all()
+    tags: set[str] = set()
+    for (t,) in profiles:
+        if t:
+            for tag in t.split(","):
+                stripped = tag.strip()
+                if stripped:
+                    tags.add(stripped)
+    return sorted(tags)
+
+
+@app.get("/api/orgs/{org_id}/lifecycle")
+def subscriber_lifecycle(org_id: str, db: Session = Depends(get_db)):
+    """
+    Compare subscriber lists across consecutive bills to detect:
+    - New activations (first appearance)
+    - Inactive lines (missing from latest bill vs prior)
+    - Plan changes (tariff plan changed between bills)
+    """
+    bills = (
+        db.query(BillUpload)
+        .filter_by(org_id=org_id)
+        .order_by(BillUpload.statement_date)
+        .all()
+    )
+    if len(bills) < 2:
+        return {"bills_loaded": len(bills), "events": [],
+                "message": "Load at least 2 bills to see lifecycle events."}
+
+    events = []
+    for i in range(1, len(bills)):
+        prev_bill = bills[i - 1]
+        curr_bill = bills[i]
+
+        prev_lines = {
+            l.subscriber_number: l
+            for l in db.query(InvoiceLine).filter_by(bill_id=prev_bill.id).all()
+        }
+        curr_lines = {
+            l.subscriber_number: l
+            for l in db.query(InvoiceLine).filter_by(bill_id=curr_bill.id).all()
+        }
+
+        # New activations
+        for sub, line in curr_lines.items():
+            if sub not in prev_lines:
+                events.append({
+                    "event": "new_activation",
+                    "subscriber_number": sub,
+                    "name": line.raw_name,
+                    "division": line.division,
+                    "period": curr_bill.statement_date,
+                    "detail": f"First appeared in {curr_bill.statement_date}",
+                    "amount_kes": round(line.amount_due_kes, 2),
+                })
+
+        # Deactivations (in prev but not in curr)
+        for sub, line in prev_lines.items():
+            if sub not in curr_lines:
+                events.append({
+                    "event": "deactivation",
+                    "subscriber_number": sub,
+                    "name": line.raw_name,
+                    "division": line.division,
+                    "period": curr_bill.statement_date,
+                    "detail": f"Last seen in {prev_bill.statement_date}",
+                    "amount_kes": 0,
+                })
+
+        # Tariff plan changes
+        for sub, curr_line in curr_lines.items():
+            if sub in prev_lines:
+                prev_tariff = prev_lines[sub].tariff_plan or ""
+                curr_tariff = curr_line.tariff_plan or ""
+                if prev_tariff and curr_tariff and prev_tariff != curr_tariff:
+                    events.append({
+                        "event": "plan_change",
+                        "subscriber_number": sub,
+                        "name": curr_line.raw_name,
+                        "division": curr_line.division,
+                        "period": curr_bill.statement_date,
+                        "detail": f"{prev_tariff} → {curr_tariff}",
+                        "amount_kes": round(curr_line.amount_due_kes, 2),
+                    })
+
+    events.sort(key=lambda e: (e["period"], e["event"]), reverse=True)
+    return {
+        "bills_loaded": len(bills),
+        "events": events,
+        "summary": {
+            "new_activations": sum(1 for e in events if e["event"] == "new_activation"),
+            "deactivations": sum(1 for e in events if e["event"] == "deactivation"),
+            "plan_changes": sum(1 for e in events if e["event"] == "plan_change"),
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BUDGET & FORECASTING ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/orgs/{org_id}/budgets")
+def get_budgets(org_id: str, db: Session = Depends(get_db)):
+    rows = db.query(BudgetEntry).filter_by(org_id=org_id).order_by(
+        BudgetEntry.period, BudgetEntry.division
+    ).all()
+    return [
+        {
+            "id": r.id, "division": r.division, "period": r.period,
+            "budget_kes": r.budget_kes, "headcount": r.headcount,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/orgs/{org_id}/budgets")
+def upsert_budget(org_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    """Upsert a budget entry for a division+period. Body: {division, period, budget_kes, headcount}."""
+    existing = db.query(BudgetEntry).filter_by(
+        org_id=org_id, division=body["division"], period=body["period"]
+    ).first()
+    if existing:
+        existing.budget_kes = float(body.get("budget_kes", 0))
+        existing.headcount = int(body.get("headcount", 0))
+    else:
+        db.add(BudgetEntry(
+            org_id=org_id,
+            division=body["division"],
+            period=body["period"],
+            budget_kes=float(body.get("budget_kes", 0)),
+            headcount=int(body.get("headcount", 0)),
+        ))
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/orgs/{org_id}/budgets/{budget_id}")
+def delete_budget(org_id: str, budget_id: int, db: Session = Depends(get_db)):
+    db.query(BudgetEntry).filter_by(id=budget_id, org_id=org_id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/orgs/{org_id}/budgets/import-csv")
+async def import_budget_csv(
+    org_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Import budgets from CSV. Required columns: division, period (YYYY-MM), budget_kes.
+    Optional: headcount.
+    """
+    content = (await file.read()).decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(content))
+    imported = 0
+    errors = []
+    for i, row in enumerate(reader, start=2):
+        try:
+            division = row.get("division", "").strip()
+            period = row.get("period", "").strip()
+            budget_kes = float(row.get("budget_kes", 0))
+            headcount = int(row.get("headcount", 0) or 0)
+            if not division or not period:
+                errors.append(f"Row {i}: missing division or period")
+                continue
+            existing = db.query(BudgetEntry).filter_by(
+                org_id=org_id, division=division, period=period
+            ).first()
+            if existing:
+                existing.budget_kes = budget_kes
+                existing.headcount = headcount
+            else:
+                db.add(BudgetEntry(
+                    org_id=org_id, division=division, period=period,
+                    budget_kes=budget_kes, headcount=headcount,
+                ))
+            imported += 1
+        except (ValueError, KeyError) as e:
+            errors.append(f"Row {i}: {e}")
+    db.commit()
+    return {"imported": imported, "errors": errors}
+
+
+@app.get("/api/orgs/{org_id}/budget-vs-actual")
+def budget_vs_actual(org_id: str, db: Session = Depends(get_db)):
+    """
+    For each bill period, compare actual division spend against budget.
+    Returns per-period, per-division actuals + budget + variance + cost-per-head.
+    """
+    bills = (
+        db.query(BillUpload)
+        .filter_by(org_id=org_id)
+        .order_by(BillUpload.statement_date)
+        .all()
+    )
+    budgets = db.query(BudgetEntry).filter_by(org_id=org_id).all()
+    # Build budget lookup: {period: {division: {budget_kes, headcount}}}
+    bmap: dict = {}
+    for b in budgets:
+        bmap.setdefault(b.period, {})[b.division] = {
+            "budget_kes": b.budget_kes,
+            "headcount": b.headcount,
+        }
+
+    result = []
+    for bill in bills:
+        # Normalise period to YYYY-MM
+        sd = bill.statement_date or ""
+        import re as _re
+        m = _re.search(r"(\d{4})-(\d{2})", sd)
+        if not m:
+            m2 = _re.search(r"(\d{2})[/-](\d{4})", sd)
+            period = f"{m2.group(2)}-{m2.group(1):0>2}" if m2 else sd[:7]
+        else:
+            period = f"{m.group(1)}-{m.group(2)}"
+
+        lines = db.query(InvoiceLine).filter_by(bill_id=bill.id).all()
+        div_actual: dict[str, float] = {}
+        for line in lines:
+            div_actual[line.division] = div_actual.get(line.division, 0) + line.amount_due_kes
+
+        all_divs = set(div_actual.keys()) | set((bmap.get(period) or {}).keys())
+        period_rows = []
+        for div in sorted(all_divs):
+            actual = round(div_actual.get(div, 0), 2)
+            bentry = (bmap.get(period) or {}).get(div, {})
+            budget = bentry.get("budget_kes", 0)
+            headcount = bentry.get("headcount", 0)
+            variance = round(actual - budget, 2) if budget else None
+            pct_used = round((actual / budget) * 100, 1) if budget else None
+            cost_per_head = round(actual / headcount, 2) if headcount else None
+            period_rows.append({
+                "division": div,
+                "actual_kes": actual,
+                "budget_kes": budget,
+                "variance_kes": variance,
+                "pct_of_budget": pct_used,
+                "headcount": headcount,
+                "cost_per_head": cost_per_head,
+                "status": (
+                    "over" if (pct_used or 0) > 100
+                    else "warning" if (pct_used or 0) > 85
+                    else "ok" if budget
+                    else "no_budget"
+                ),
+            })
+
+        result.append({
+            "bill_id": bill.id,
+            "period": period,
+            "statement_date": bill.statement_date,
+            "total_actual": round(sum(div_actual.values()), 2),
+            "total_budget": round(sum(b.budget_kes for b in budgets if b.period == period), 2),
+            "divisions": period_rows,
+        })
+    return result
+
+
+@app.get("/api/orgs/{org_id}/forecast")
+def spend_forecast(org_id: str, months_ahead: int = 3, db: Session = Depends(get_db)):
+    """
+    3-month linear regression forecast for total org spend and top divisions.
+    Uses all loaded bill history.
+    """
+    bills = (
+        db.query(BillUpload)
+        .filter_by(org_id=org_id)
+        .order_by(BillUpload.statement_date)
+        .all()
+    )
+    if len(bills) < 2:
+        return {"forecast": [], "message": "Load at least 2 bills to generate a forecast."}
+
+    # Total spend history
+    totals = []
+    for b in bills:
+        amt = db.query(func.sum(InvoiceLine.amount_due_kes)).filter_by(bill_id=b.id).scalar() or 0
+        totals.append(float(amt))
+
+    n = len(totals)
+    xs = list(range(n))
+    x_mean = sum(xs) / n
+    y_mean = sum(totals) / n
+    denom = sum((x - x_mean) ** 2 for x in xs) or 1
+    slope = sum((xs[i] - x_mean) * (totals[i] - y_mean) for i in range(n)) / denom
+    intercept = y_mean - slope * x_mean
+
+    # Forecast periods
+    import re as _re
+    last_date = bills[-1].statement_date or ""
+    forecast_points = []
+    for ahead in range(1, months_ahead + 1):
+        predicted = max(0, intercept + slope * (n - 1 + ahead))
+        # Estimate period label
+        m = _re.search(r"(\d{4})-(\d{2})", last_date)
+        if m:
+            yr, mo = int(m.group(1)), int(m.group(2))
+            mo += ahead
+            while mo > 12:
+                mo -= 12; yr += 1
+            period_label = f"{yr}-{mo:02d}"
+        else:
+            period_label = f"T+{ahead}"
+        forecast_points.append({
+            "period": period_label,
+            "predicted_kes": round(predicted, 2),
+            "is_forecast": True,
+        })
+
+    # Confidence band (± 1 std-dev of residuals)
+    residuals = [totals[i] - (intercept + slope * i) for i in range(n)]
+    std_dev = (sum(r ** 2 for r in residuals) / max(n - 2, 1)) ** 0.5
+    for pt in forecast_points:
+        pt["lower_kes"] = round(max(0, pt["predicted_kes"] - std_dev), 2)
+        pt["upper_kes"] = round(pt["predicted_kes"] + std_dev, 2)
+
+    # Historical points for chart continuity
+    history = []
+    for i, b in enumerate(bills):
+        history.append({
+            "period": b.statement_date,
+            "actual_kes": round(totals[i], 2),
+            "trend_kes": round(intercept + slope * i, 2),
+            "is_forecast": False,
+        })
+
+    return {
+        "slope_kes_per_month": round(slope, 2),
+        "history": history,
+        "forecast": forecast_points,
+        "std_dev": round(std_dev, 2),
+    }
+
+
+@app.get("/api/orgs/{org_id}/alerts")
+def get_alerts(org_id: str, db: Session = Depends(get_db)):
+    rows = db.query(SpendAlert).filter_by(org_id=org_id, is_active=True).all()
+    return [
+        {
+            "id": r.id, "scope": r.scope, "scope_value": r.scope_value,
+            "threshold_kes": r.threshold_kes, "is_active": r.is_active,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/orgs/{org_id}/alerts")
+def create_alert(org_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    alert = SpendAlert(
+        org_id=org_id,
+        scope=body.get("scope", "subscriber"),
+        scope_value=body.get("scope_value", ""),
+        threshold_kes=float(body.get("threshold_kes", 0)),
+        is_active=True,
+    )
+    db.add(alert); db.commit()
+    return {"id": alert.id}
+
+
+@app.delete("/api/orgs/{org_id}/alerts/{alert_id}")
+def delete_alert(org_id: str, alert_id: int, db: Session = Depends(get_db)):
+    db.query(SpendAlert).filter_by(id=alert_id, org_id=org_id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/orgs/{org_id}/alert-breaches")
+def alert_breaches(org_id: str, db: Session = Depends(get_db)):
+    """
+    For the latest bill, check which subscribers/divisions are breaching their alert thresholds.
+    """
+    latest_bill = (
+        db.query(BillUpload)
+        .filter_by(org_id=org_id)
+        .order_by(BillUpload.statement_date.desc())
+        .first()
+    )
+    if not latest_bill:
+        return []
+
+    alerts = db.query(SpendAlert).filter_by(org_id=org_id, is_active=True).all()
+    lines = db.query(InvoiceLine).filter_by(bill_id=latest_bill.id).all()
+
+    # Build totals
+    sub_totals: dict[str, float] = {}
+    div_totals: dict[str, float] = {}
+    grand_total = 0.0
+    sub_names: dict[str, str] = {}
+    for l in lines:
+        sub_totals[l.subscriber_number] = sub_totals.get(l.subscriber_number, 0) + l.amount_due_kes
+        div_totals[l.division] = div_totals.get(l.division, 0) + l.amount_due_kes
+        grand_total += l.amount_due_kes
+        sub_names[l.subscriber_number] = l.raw_name
+
+    breaches = []
+    for alert in alerts:
+        if alert.scope == "subscriber":
+            actual = sub_totals.get(alert.scope_value, 0)
+            name = sub_names.get(alert.scope_value, alert.scope_value)
+        elif alert.scope == "division":
+            actual = div_totals.get(alert.scope_value, 0)
+            name = alert.scope_value
+        else:  # total
+            actual = grand_total
+            name = "Total Bill"
+
+        if actual > alert.threshold_kes:
+            breaches.append({
+                "alert_id": alert.id,
+                "scope": alert.scope,
+                "scope_value": alert.scope_value,
+                "name": name,
+                "actual_kes": round(actual, 2),
+                "threshold_kes": round(alert.threshold_kes, 2),
+                "overage_kes": round(actual - alert.threshold_kes, 2),
+                "pct_over": round(((actual - alert.threshold_kes) / alert.threshold_kes) * 100, 1),
+            })
+    return breaches
+
+
+# ── Serve dashboard ──────────────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+def serve_dashboard():
+    index = STATIC_DIR / "index.html"
+    if index.exists():
+        return index.read_text(encoding="utf-8")
+    return HTMLResponse("<h2>TelecomLens API ✓</h2><p><a href='/docs'>API docs</a></p>")

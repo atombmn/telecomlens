@@ -1,0 +1,28 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Database (contains org-sensitive bill data — do not commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Environment config (contains secrets)
+.env
+
+# Downloaded binaries
+poppler/
+
+# Bill PDFs (may contain PII — do not commit)
+bills/*.pdf
+
+# Node / build artefacts
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/

@@ -1,0 +1,2456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TelecomLens</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc3UJWW1h3QFkAhIXRIMQYcMqiTPSBXlCFkCVYtNHCVnqfFx+RFDhR7VgFZMjGqniGng==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+:root {
+  --bg:#f8f9fa;--bg2:#f1f3f5;--bg3:#e9ecef;--fg:#1a1a2e;--fg2:#495057;--fg3:#868e96;
+  --blue:#2563eb;--teal:#0d9488;--coral:#dc2626;--amber:#d97706;--green:#16a34a;
+  --purple:#7c3aed;--border:#dee2e6;--card:#ffffff;--radius:8px;
+  --shadow:0 1px 4px rgba(0,0,0,.07);--panel-w:420px;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#0f0f14;--bg2:#1a1a24;--bg3:#25253a;--fg:#e4e4ec;--fg2:#a0a0b8;--fg3:#6b6b80;
+        --border:#2a2a3e;--card:#16161f;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg);font-size:14px;line-height:1.5}
+a{color:var(--blue);text-decoration:none}
+.container{max-width:1240px;margin:0 auto;padding:1rem}
+
+/* Header */
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:0 1.5rem;display:flex;align-items:center;gap:1rem;height:52px;position:sticky;top:0;z-index:100}
+.logo{font-weight:700;font-size:16px;color:var(--blue);letter-spacing:-.5px}
+.header-sep{flex:1}
+select.hselect{background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--fg);padding:5px 8px;font-size:13px;cursor:pointer}
+.hbtn{background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--fg2);padding:5px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
+.hbtn:hover{background:var(--bg3)}
+.hbtn.primary{background:var(--blue);color:#fff;border-color:var(--blue)}
+.hbtn.primary:hover{background:#1d4ed8}
+
+/* Tabs */
+.tabs{display:flex;gap:2px;background:var(--bg2);border-bottom:1px solid var(--border);padding:0 1.5rem;overflow-x:auto}
+.tab{padding:10px 16px;font-size:13px;font-weight:500;color:var(--fg3);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s}
+.tab:hover{color:var(--fg)}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+.tab-edit{background:none;border:none;cursor:pointer;color:var(--fg3);font-size:11px;padding:0 0 0 4px;opacity:0;transition:opacity .15s}
+.tab:hover .tab-edit{opacity:1}
+
+/* Cards & Layout */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;margin-bottom:1rem;box-shadow:var(--shadow)}
+.card-title{font-size:13px;font-weight:600;color:var(--fg2);margin-bottom:.75rem;display:flex;align-items:center;gap:6px}
+.card-title .edit-label{background:none;border:none;cursor:pointer;color:var(--fg3);font-size:11px;padding:0 0 0 4px;opacity:0;transition:opacity .15s}
+.card-title:hover .edit-label{opacity:1}
+.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.75rem;margin-bottom:1rem}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem}
+
+/* KPI cards */
+.kpi{background:var(--bg2);border-radius:var(--radius);padding:14px 16px;cursor:pointer;transition:background .15s,box-shadow .15s;position:relative;border:1px solid transparent}
+.kpi:hover{background:var(--bg3);box-shadow:var(--shadow)}
+.kpi.active{border-color:var(--blue);background:var(--bg3)}
+.kpi-label{font-size:11px;color:var(--fg3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:4px}
+.kpi-label .edit-label{background:none;border:none;cursor:pointer;color:var(--fg3);font-size:10px;padding:0;opacity:0;transition:opacity .15s}
+.kpi:hover .kpi-label .edit-label{opacity:1}
+.kpi-value{font-size:22px;font-weight:700;color:var(--fg)}
+.kpi-sub{font-size:11px;color:var(--fg3);margin-top:2px}
+.kpi-drill{position:absolute;top:8px;right:8px;font-size:10px;color:var(--blue);opacity:0;transition:opacity .15s}
+.kpi:hover .kpi-drill{opacity:1}
+
+/* Tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 10px;font-size:11px;font-weight:600;color:var(--fg3);border-bottom:2px solid var(--border);text-transform:uppercase;letter-spacing:.4px}
+td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr.clickable{cursor:pointer;transition:background .1s}
+tr.clickable:hover{background:var(--bg2)}
+tr.clickable:hover td:first-child::after{content:" ↗";color:var(--blue);font-size:11px}
+.tbl-wrap{overflow-x:auto}
+
+/* Badges */
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:500}
+.badge-red{background:#fee2e2;color:#991b1b}
+.badge-amber{background:#fef3c7;color:#92400e}
+.badge-green{background:#d1fae5;color:#065f46}
+.badge-blue{background:#dbeafe;color:#1e40af}
+.badge-gray{background:var(--bg3);color:var(--fg3)}
+
+/* Charts */
+.chart-wrap{position:relative;width:100%;height:220px}
+.chart-wrap-tall{position:relative;width:100%;height:280px}
+
+/* Search */
+.search-bar{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
+.search-bar input{flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:7px 12px;color:var(--fg);font-size:13px}
+.search-bar input:focus{outline:none;border-color:var(--blue)}
+
+/* ── DRILL-DOWN PANEL ──────────────────────────────────────────────── */
+#drill-overlay{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.25)}
+#drill-overlay.open{display:block}
+#drill-panel{position:fixed;right:0;top:0;bottom:0;width:var(--panel-w);background:var(--card);border-left:1px solid var(--border);z-index:201;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);overflow:hidden}
+#drill-panel.open{transform:translateX(0)}
+.drill-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
+.drill-head-title{flex:1;font-size:14px;font-weight:600;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drill-close{background:none;border:none;cursor:pointer;font-size:18px;color:var(--fg3);padding:0 4px}
+.drill-close:hover{color:var(--fg)}
+.drill-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.drill-stat{text-align:center}
+.drill-stat-val{font-size:18px;font-weight:700;color:var(--fg)}
+.drill-stat-lbl{font-size:10px;color:var(--fg3);text-transform:uppercase;letter-spacing:.4px}
+.drill-spark{padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.drill-spark-title{font-size:11px;font-weight:600;color:var(--fg3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.drill-body{flex:1;overflow-y:auto;padding:0 0 1rem}
+.drill-section{padding:10px 16px 0}
+.drill-section-title{font-size:11px;font-weight:600;color:var(--fg3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.drill-table{width:100%;border-collapse:collapse;font-size:12px}
+.drill-table th{text-align:left;padding:5px 8px;font-size:10px;color:var(--fg3);border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.4px;font-weight:600}
+.drill-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.drill-table tr:last-child td{border-bottom:none}
+.drill-table tr.anom td{background:#fff8f8}
+@media(prefers-color-scheme:dark){.drill-table tr.anom td{background:#2a1414}}
+.drill-footer{padding:10px 16px;border-top:1px solid var(--border);flex-shrink:0;display:flex;gap:8px}
+.drill-footer .hbtn{flex:1;text-align:center}
+
+/* ── LABEL EDIT DRAWER ─────────────────────────────────────────────── */
+#label-overlay{display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.3)}
+#label-overlay.open{display:block}
+#label-drawer{position:fixed;right:0;top:0;bottom:0;width:380px;background:var(--card);border-left:1px solid var(--border);z-index:301;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1)}
+#label-drawer.open{transform:translateX(0)}
+.ld-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
+.ld-head-title{flex:1;font-size:14px;font-weight:600}
+.ld-body{flex:1;overflow-y:auto;padding:1rem}
+.ld-section{margin-bottom:1.25rem}
+.ld-section-title{font-size:11px;font-weight:600;color:var(--fg3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:.5rem}
+.ld-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.ld-row label{flex:0 0 140px;font-size:12px;color:var(--fg2)}
+.ld-row input{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px;color:var(--fg)}
+.ld-row input:focus{outline:none;border-color:var(--blue)}
+.ld-footer{padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px}
+
+/* Misc */
+.empty{text-align:center;padding:3rem 1rem;color:var(--fg3);font-size:13px}
+.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;margin:2rem auto;display:block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pill-d{background:#dbeafe;color:#1e40af}
+.pill-m{background:#fef3c7;color:#92400e}
+.anom-row{background:#fff8f8}
+@media(prefers-color-scheme:dark){.anom-row{background:#2a1414}}
+.top3-bar{height:4px;background:var(--bg3);border-radius:2px;margin-top:4px}
+.top3-fill{height:4px;background:var(--blue);border-radius:2px;transition:width .4s}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">📡 TelecomLens</span>
+  <select class="hselect" id="org-select" onchange="onOrgChange(this.value)"><option value="">All orgs</option></select>
+  <select class="hselect" id="bill-select" onchange="onBillChange(this.value)"><option value="">Select bill…</option></select>
+  <span class="header-sep"></span>
+  <button class="hbtn" onclick="openImport()">⊕ Import PDF</button>
+  <button class="hbtn" onclick="openLabelDrawer()" title="Customise labels">✎ Customise</button>
+  <button id="report-btn" class="hbtn primary" style="display:none" onclick="downloadReport()" title="Download executive .docx report">&#x1F4C4; Report</button>
+  <a id="chargeback-link" class="hbtn" style="display:none" href="#" target="_blank">⬇ Chargeback CSV</a>
+</div>
+
+<div class="tabs" id="tabs-bar"></div>
+
+<div class="container" id="main-content">
+  <div class="empty">
+    <div class="spinner"></div>
+    Loading dashboard…
+  </div>
+</div>
+
+<!-- Drill-down overlay + panel -->
+<div id="drill-overlay" onclick="closeDrill()"></div>
+<div id="drill-panel">
+  <div class="drill-head">
+    <span class="drill-head-title" id="drill-title">Detail</span>
+    <button class="drill-close" onclick="closeDrill()">✕</button>
+  </div>
+  <div class="drill-stats" id="drill-stats"></div>
+  <div class="drill-spark" id="drill-spark-wrap" style="display:none">
+    <div class="drill-spark-title">Trend history</div>
+    <div class="chart-wrap" style="height:80px"><canvas id="drill-spark-chart"></canvas></div>
+  </div>
+  <div class="drill-body" id="drill-body"></div>
+  <div class="drill-footer" id="drill-footer"></div>
+</div>
+
+<!-- Label edit overlay + drawer -->
+<div id="label-overlay" onclick="closeLabelDrawer()"></div>
+<div id="label-drawer">
+  <div class="ld-head">
+    <span class="ld-head-title">✎ Customise labels</span>
+    <button class="drill-close" onclick="closeLabelDrawer()">✕</button>
+  </div>
+  <div class="ld-body" id="ld-body"></div>
+  <div class="ld-footer">
+    <button class="hbtn primary" onclick="saveLabels()" style="flex:1">Save changes</button>
+    <button class="hbtn" onclick="resetLabels()">Reset to defaults</button>
+  </div>
+</div>
+
+<script>
+// ─── STATE ──────────────────────────────────────────────────────────────────
+const _drillCache = new Map();
+let _drillCacheKey = 0;
+const S = {
+  activeOrgId: null,
+  activeBillId: null,
+  activeTab: 'executive',
+  summary: null,
+  divisions: [],
+  trends: [],
+  topSpenders: [],
+  searchTimer: null,
+  subscribers: { total: 0, profiles: [] },
+  tags: [],
+  lifecycle: { events: [], summary: {} },
+  budgetVsActual: [],
+  forecast: null,
+  alertBreaches: [],
+  alerts: [],
+  annotations: [],
+  auditLog: [],
+  webhooks: [],
+  carriers: [],
+  drillSparkChart: null,
+  charts: {},
+};
+
+// ─── LABEL SYSTEM ────────────────────────────────────────────────────────────
+const DEFAULT_LABELS = {
+  // tabs
+  'tab.executive':   'Executive',
+  'tab.finance':     'Finance',
+  'tab.ict':         'ICT',
+  'tab.operations':  'Operations',
+  'tab.trends':      'Trends',
+  'tab.subscribers': 'Subscribers',
+  'tab.budget':      'Budget & Forecast',
+  // kpi cards
+  'kpi.total_spend':     'Total Spend',
+  'kpi.subscribers':     'Subscribers',
+  'kpi.anomalies':       'Anomalies',
+  'kpi.outstanding':     'Outstanding',
+  'kpi.pre_tax':         'Pre-Tax Total',
+  'kpi.excise':          'Excise Duty',
+  'kpi.vat':             'VAT',
+  'kpi.top_division':    'Top Division',
+  // section headings
+  'section.division_breakdown': 'Spend by Division',
+  'section.charge_components':  'Charge Components',
+  'section.tax_recon':          'Tax Reconciliation',
+  'section.chargeback':         'Chargeback Register',
+  'section.subscriber_search':  'Subscriber Search',
+  'section.anomaly_tracker':    'Anomaly Tracker',
+  'section.trend_overview':     'Spend Trend',
+  'section.top_spenders':       'Top Spenders',
+  'section.division_trend':     'Division Trend',
+  // subscriber management
+  'section.sub_registry':       'Subscriber Registry',
+  'section.lifecycle':          'Lifecycle Events',
+  'section.tag_manager':        'Tag Manager',
+  // budget & forecast
+  'section.bva':                'Budget vs Actual',
+  'section.forecast':           'Spend Forecast',
+  'section.alerts':             'Spend Alerts',
+  'section.benchmarks':         'Cost-per-Head Benchmarks',
+  // reporting & export
+  'tab.reporting':              'Reports & Export',
+  'section.report_builder':     'Custom Report Builder',
+  'section.annotations':        'Annotations',
+  'section.excel_packs':        'Division Excel Packs',
+  // data & integrations
+  'tab.integrations':           'Data & Integrations',
+  'section.audit_log':          'Audit Trail',
+  'section.webhooks':           'Webhooks',
+  'section.carriers':           'Carrier Detection',
+};
+
+const LABEL_META = [
+  { group: 'Tab names', keys: ['tab.executive','tab.finance','tab.ict','tab.operations','tab.trends'] },
+  { group: 'KPI card titles', keys: ['kpi.total_spend','kpi.subscribers','kpi.anomalies','kpi.outstanding','kpi.pre_tax','kpi.excise','kpi.vat','kpi.top_division'] },
+  { group: 'Section headings', keys: ['section.division_breakdown','section.charge_components','section.tax_recon','section.chargeback','section.subscriber_search','section.anomaly_tracker','section.trend_overview','section.top_spenders','section.division_trend'] },
+  { group: 'Subscriber Management', keys: ['tab.subscribers','section.sub_registry','section.lifecycle','section.tag_manager'] },
+  { group: 'Budget & Forecast', keys: ['tab.budget','section.bva','section.forecast','section.alerts','section.benchmarks'] },
+  { group: 'Reports & Export', keys: ['tab.reporting','section.report_builder','section.annotations','section.excel_packs'] },
+  { group: 'Data & Integrations', keys: ['tab.integrations','section.audit_log','section.webhooks','section.carriers'] },
+];
+
+function loadLabels() {
+  try { return { ...DEFAULT_LABELS, ...JSON.parse(localStorage.getItem('tl_labels') || '{}') }; }
+  catch { return { ...DEFAULT_LABELS }; }
+}
+function lbl(key) {
+  const labels = loadLabels();
+  return labels[key] || DEFAULT_LABELS[key] || key;
+}
+function saveLabels() {
+  const inputs = document.querySelectorAll('#ld-body input[data-key]');
+  const labels = {};
+  inputs.forEach(inp => { if (inp.value.trim()) labels[inp.dataset.key] = inp.value.trim(); });
+  localStorage.setItem('tl_labels', JSON.stringify(labels));
+  closeLabelDrawer();
+  renderTabs();
+  if (S.summary) renderTab(S.activeTab);
+}
+function resetLabels() {
+  if (!confirm('Reset all labels to defaults?')) return;
+  localStorage.removeItem('tl_labels');
+  closeLabelDrawer();
+  renderTabs();
+  if (S.summary) renderTab(S.activeTab);
+}
+function openLabelDrawer() {
+  const labels = loadLabels();
+  const body = document.getElementById('ld-body');
+  body.innerHTML = LABEL_META.map(group => `
+    <div class="ld-section">
+      <div class="ld-section-title">${group.group}</div>
+      ${group.keys.map(k => `
+        <div class="ld-row">
+          <label>${DEFAULT_LABELS[k]}</label>
+          <input data-key="${k}" value="${escH(labels[k] || DEFAULT_LABELS[k])}" placeholder="${escH(DEFAULT_LABELS[k])}">
+        </div>`).join('')}
+    </div>`).join('');
+  document.getElementById('label-overlay').classList.add('open');
+  document.getElementById('label-drawer').classList.add('open');
+}
+function closeLabelDrawer() {
+  document.getElementById('label-overlay').classList.remove('open');
+  document.getElementById('label-drawer').classList.remove('open');
+}
+
+// ─── DRILL-DOWN ──────────────────────────────────────────────────────────────
+let drillSparkInst = null;
+
+async function openDrill(params) {
+  if (!S.activeBillId) return;
+  const { by, value, title } = params;
+  document.getElementById('drill-title').textContent = title;
+  document.getElementById('drill-stats').innerHTML = '<div class="spinner"></div>';
+  document.getElementById('drill-body').innerHTML = '';
+  document.getElementById('drill-spark-wrap').style.display = 'none';
+  document.getElementById('drill-footer').innerHTML = '';
+  document.getElementById('drill-overlay').classList.add('open');
+  document.getElementById('drill-panel').classList.add('open');
+
+  const url = `/api/bills/${S.activeBillId}/drilldown?by=${encodeURIComponent(by)}&value=${encodeURIComponent(value||'')}`;
+  const data = await apiFetch(url);
+  if (!data) { closeDrill(); return; }
+
+  // Stats bar
+  const pct = S.summary ? ((data.total_amount / S.summary.account_total) * 100).toFixed(1) : '–';
+  document.getElementById('drill-stats').innerHTML = `
+    <div class="drill-stat"><div class="drill-stat-val">KES ${fmtN(data.total_amount)}</div><div class="drill-stat-lbl">Total</div></div>
+    <div class="drill-stat"><div class="drill-stat-val">${data.count}</div><div class="drill-stat-lbl">Lines</div></div>
+    <div class="drill-stat"><div class="drill-stat-val">${pct}%</div><div class="drill-stat-lbl">of Bill</div></div>`;
+
+  // Sparkline
+  if (data.history && data.history.length > 1) {
+    document.getElementById('drill-spark-wrap').style.display = '';
+    const ctx = document.getElementById('drill-spark-chart').getContext('2d');
+    if (drillSparkInst) drillSparkInst.destroy();
+    drillSparkInst = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: data.history.map(h => h.date),
+        datasets: [{ data: data.history.map(h => h.amount), borderColor: '#2563eb',
+                     backgroundColor: 'rgba(37,99,235,.08)', tension: .35, fill: true,
+                     pointRadius: 3, pointHoverRadius: 5 }],
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: ctx => 'KES ' + fmtN(ctx.raw) } } },
+        scales: { x: { ticks: { font: { size: 10 }, maxRotation: 0 } },
+                  y: { ticks: { font: { size: 10 }, callback: v => fmtN(v) } } } },
+    });
+  }
+
+  // Top 3 contributors
+  const top3 = [...data.lines].sort((a,b) => b.amount_due_kes - a.amount_due_kes).slice(0, 3);
+  const maxAmt = top3[0]?.amount_due_kes || 1;
+  const top3html = top3.length ? `
+    <div class="drill-section">
+      <div class="drill-section-title">Top contributors</div>
+      ${top3.map(l => `
+        <div style="margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;font-size:12px">
+            <span style="color:var(--fg);font-weight:500">${escH(l.raw_name || l.subscriber_number)}</span>
+            <span style="color:var(--blue);font-weight:600">KES ${fmtN(l.amount_due_kes)}</span>
+          </div>
+          <div class="top3-bar"><div class="top3-fill" style="width:${Math.round((l.amount_due_kes/maxAmt)*100)}%"></div></div>
+          <div style="font-size:11px;color:var(--fg3)">${escH(l.division)} · ${escH(l.tariff_plan||'')}</div>
+        </div>`).join('')}
+    </div>` : '';
+
+  // Full line-items table
+  const anomCount = data.lines.filter(l => l.is_anomaly).length;
+  document.getElementById('drill-body').innerHTML = top3html + `
+    <div class="drill-section" style="margin-top:${top3.length ? '8px':'0'}">
+      <div class="drill-section-title" style="display:flex;justify-content:space-between">
+        <span>Line items (${data.count})</span>
+        ${anomCount ? `<span class="badge badge-red">${anomCount} anomalies</span>` : ''}
+      </div>
+      <table class="drill-table">
+        <thead><tr><th>Name / Number</th><th>Division</th><th style="text-align:right">KES</th><th>CDRs</th></tr></thead>
+        <tbody>${data.lines.map(l => `
+          <tr class="${l.is_anomaly ? 'anom':''}" onclick="openDrillSub('${escH(l.subscriber_number)}','${escH(l.raw_name)}')" style="cursor:pointer">
+            <td>
+              <div style="font-weight:500;color:var(--fg)">${escH(l.raw_name)}</div>
+              <div style="font-size:11px;color:var(--fg3)">${escH(l.subscriber_number)}</div>
+              ${l.is_anomaly ? `<div style="font-size:10px;color:#dc2626">${escH(l.anomaly_reason)}</div>` : ''}
+            </td>
+            <td><span class="badge badge-blue" style="font-size:10px">${escH(l.division)}</span></td>
+            <td style="text-align:right;font-weight:600;color:var(--blue)">${fmtN(l.amount_due_kes)}</td>
+            <td style="color:var(--fg3)">${l.cdr_count}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  // Footer
+  const _ck = ++_drillCacheKey;
+  _drillCache.set(_ck, data);
+  document.getElementById('drill-footer').innerHTML = `
+    <button class="hbtn" onclick="exportDrillCSV(${_ck})">⬇ Export CSV</button>
+    <button class="hbtn" onclick="closeDrill()">Close</button>`;
+}
+
+function openDrillSub(subNum, subName) {
+  closeDrill();
+  setTimeout(() => openDrill({ by: 'subscriber', value: subNum, title: subName }), 80);
+}
+
+function closeDrill() {
+  document.getElementById('drill-overlay').classList.remove('open');
+  document.getElementById('drill-panel').classList.remove('open');
+}
+
+function exportDrillCSV(cacheKey) {
+  const data = _drillCache.get(cacheKey);
+  if (!data) { alert('Export data not available — please re-open the drill panel.'); return; }
+  const rows = [['Subscriber Number','Name','Division','Tariff Plan','Pre-Tax','Excise','VAT','Amount (KES)','CDR Count','Anomaly','Reason']];
+  data.lines.forEach(l => rows.push([l.subscriber_number, l.raw_name, l.division, l.tariff_plan,
+    l.pre_tax, l.excise, l.vat, l.amount_due_kes, l.cdr_count, l.is_anomaly?'Yes':'', l.anomaly_reason||'']));
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `drilldown_${data.by}_${data.value||'all'}.csv`;
+  a.click();
+}
+
+// ─── API HELPERS ─────────────────────────────────────────────────────────────
+async function apiFetch(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
+  catch { return null; }
+}
+
+// ─── LOAD DATA ───────────────────────────────────────────────────────────────
+async function loadOrgs() {
+  const orgs = await apiFetch('/api/orgs') || [];
+  const sel = document.getElementById('org-select');
+  sel.innerHTML = '<option value="">All orgs</option>';
+  orgs.forEach(o => sel.insertAdjacentHTML('beforeend', `<option value="${o.id}">${escH(o.name)}</option>`));
+  if (orgs.length === 1) { sel.value = orgs[0].id; S.activeOrgId = orgs[0].id; }
+}
+
+async function loadBills(orgId) {
+  const url = '/api/bills' + (orgId ? `?org_id=${orgId}` : '');
+  const bills = await apiFetch(url) || [];
+  const sel = document.getElementById('bill-select');
+  sel.innerHTML = '<option value="">Select bill…</option>';
+  bills.forEach(b => sel.insertAdjacentHTML('beforeend',
+    `<option value="${b.id}">${escH(b.statement_date)} — ${escH(b.filename)}</option>`));
+  if (bills.length) { sel.value = bills[0].id; S.activeBillId = bills[0].id; }
+}
+
+async function loadBillData(billId) {
+  [S.summary, S.divisions] = await Promise.all([
+    apiFetch(`/api/bills/${billId}/summary`),
+    apiFetch(`/api/bills/${billId}/divisions`),
+  ]);
+  const rBtn = document.getElementById('report-btn');
+  const cbLink = document.getElementById('chargeback-link');
+  if (S.summary) {
+    cbLink.href = `/api/bills/${billId}/chargeback.csv`;
+    cbLink.style.display = '';
+    rBtn.style.display = '';
+    rBtn.dataset.billId = billId;
+  } else {
+    cbLink.style.display = 'none';
+    rBtn.style.display = 'none';
+  }
+}
+
+async function loadTrends() {
+  S.trends = await apiFetch('/api/trends' + (S.activeOrgId ? `?org_id=${S.activeOrgId}` : '')) || [];
+}
+async function loadTopSpenders() {
+  S.topSpenders = await apiFetch('/api/trends/top-spenders' + (S.activeOrgId ? `?org_id=${S.activeOrgId}` : '')) || [];
+}
+
+// ─── EVENTS ──────────────────────────────────────────────────────────────────
+async function onOrgChange(orgId) {
+  S.activeOrgId = orgId;
+  await loadBills(orgId);
+  if (S.activeBillId) await loadBillData(S.activeBillId);
+  renderTab(S.activeTab);
+}
+async function onBillChange(billId) {
+  S.activeBillId = billId ? parseInt(billId) : null;
+  if (S.activeBillId) await loadBillData(S.activeBillId);
+  renderTab(S.activeTab);
+}
+function switchTab(tab) {
+  if (tab !== S.activeTab) closeDrill();
+  S.activeTab = tab;
+  renderTabs();
+  renderTab(tab);
+}
+
+// ─── TABS ─────────────────────────────────────────────────────────────────────
+function renderTabs() {
+  const tabs = [
+    { id: 'executive', labelKey: 'tab.executive' },
+    { id: 'finance',   labelKey: 'tab.finance' },
+    { id: 'ict',       labelKey: 'tab.ict' },
+    { id: 'operations',labelKey: 'tab.operations' },
+    { id: 'trends',    labelKey: 'tab.trends' },
+    { id: 'subscribers', labelKey: 'tab.subscribers' },
+    { id: 'budget',      labelKey: 'tab.budget' },
+    { id: 'reporting',   labelKey: 'tab.reporting' },
+    { id: 'integrations',labelKey: 'tab.integrations' },
+  ];
+  document.getElementById('tabs-bar').innerHTML = tabs.map(t => `
+    <div class="tab ${S.activeTab === t.id ? 'active' : ''}" onclick="switchTab('${t.id}')">
+      ${escH(lbl(t.labelKey))}
+    </div>`).join('');
+}
+
+// ─── TAB RENDERER ────────────────────────────────────────────────────────────
+function renderTab(tab) {
+  destroyCharts();
+  const el = document.getElementById('main-content');
+  if (!S.summary || !S.activeBillId) {
+    el.innerHTML = '<div class="empty">No bill loaded — import a PDF or select a bill above.</div>';
+    return;
+  }
+  if (tab === 'executive')  el.innerHTML = renderExecutive();
+  if (tab === 'finance')    el.innerHTML = renderFinance();
+  if (tab === 'ict')        { el.innerHTML = renderICT(); loadSubscribers(S.activeBillId, '', ''); return; }
+  if (tab === 'operations') { el.innerHTML = renderOperations(); loadAnomalies(S.activeBillId); return; }
+  if (tab === 'trends')     { el.innerHTML = renderTrends(); loadTrends().then(() => loadTopSpenders()).then(renderTrendsCharts); return; }
+  if (tab === 'subscribers') { el.innerHTML = renderSubscribers(); loadSubscriberRegistry(); return; }
+  if (tab === 'budget')      { el.innerHTML = renderBudget(); loadBudgetData(); return; }
+  if (tab === 'reporting')   { el.innerHTML = renderReporting(); loadReportingData(); return; }
+  if (tab === 'integrations'){ el.innerHTML = renderIntegrations(); loadIntegrationsData(); return; }
+  requestAnimationFrame(() => initTabCharts(tab));
+}
+
+function destroyCharts() {
+  Object.values(S.charts).forEach(c => { try { c.destroy(); } catch {} });
+  S.charts = {};
+}
+
+// ─── EXECUTIVE TAB ──────────────────────────────────────────────────────────
+function renderExecutive() {
+  const s = S.summary;
+  return `
+  <div class="grid4">
+    ${kpiCard('kpi.total_spend', 'KES ' + fmtN(s.account_total), s.subscriber_count + ' lines', 'division', '', 'View all lines')}
+    ${kpiCard('kpi.subscribers', s.subscriber_count, 'active lines', 'division', '', 'Browse')}
+    ${kpiCard('kpi.anomalies', s.anomaly_count, s.anomaly_count ? 'need review' : 'all clear', 'anomaly', '', 'View anomalies')}
+    ${kpiCard('kpi.outstanding', 'KES ' + fmtN(s.outstanding_total), 'carried forward', 'division', '', 'View outstanding')}
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">${secTitle('section.division_breakdown')}</div>
+      <div class="chart-wrap-tall"><canvas id="exec-div-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">${secTitle('section.charge_components')}</div>
+      <div class="chart-wrap-tall"><canvas id="exec-charge-chart"></canvas></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">${secTitle('section.division_breakdown')} — detail</div>
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Division</th><th>Lines</th><th style="text-align:right">Amount (KES)</th><th style="text-align:right">Share</th><th></th></tr></thead>
+      <tbody>${S.divisions.map(d => `
+        <tr class="clickable" onclick="openDrill({by:'division',value:'${escH(d.division)}',title:'Division: ${escH(d.division)}'})">
+          <td><strong>${escH(d.division)}</strong></td>
+          <td>${d.count}</td>
+          <td style="text-align:right;color:var(--blue);font-weight:600">KES ${fmtN(d.total)}</td>
+          <td style="text-align:right">${s.account_total ? ((d.total/s.account_total)*100).toFixed(1)+'%' : '–'}</td>
+          <td style="color:var(--blue);font-size:11px">drill ↗</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+  </div>`;
+}
+
+// ─── FINANCE TAB ──────────────────────────────────────────────────────────────
+function renderFinance() {
+  const s = S.summary;
+  const expectedExcise = +(s.pre_tax_total * 0.15).toFixed(2);
+  const expectedVAT = +((s.pre_tax_total + s.excise_total) * 0.16).toFixed(2);
+  const exciseDiff = +(s.excise_total - expectedExcise).toFixed(2);
+  const vatDiff = +(s.vat_total - expectedVAT).toFixed(2);
+  return `
+  <div class="grid4">
+    ${kpiCard('kpi.pre_tax', 'KES ' + fmtN(s.pre_tax_total), 'before taxes', 'division', '', 'View lines')}
+    ${kpiCard('kpi.excise', 'KES ' + fmtN(s.excise_total), `expected KES ${fmtN(expectedExcise)}`, 'division', '', 'View')}
+    ${kpiCard('kpi.vat', 'KES ' + fmtN(s.vat_total), `expected KES ${fmtN(expectedVAT)}`, 'division', '', 'View')}
+    ${kpiCard('kpi.outstanding', 'KES ' + fmtN(s.outstanding_total), 'carried forward', 'division', '', 'View')}
+  </div>
+  <div class="card">
+    <div class="card-title">${secTitle('section.tax_recon')}</div>
+    <table>
+      <thead><tr><th>Component</th><th style="text-align:right">Actual (KES)</th><th style="text-align:right">Expected (KES)</th><th style="text-align:right">Variance</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr class="clickable" onclick="openDrill({by:'division',value:'',title:'All lines — Pre-tax detail'})">
+          <td>Pre-Tax Total</td><td style="text-align:right">${fmtN(s.pre_tax_total)}</td><td style="text-align:right">—</td><td style="text-align:right">—</td><td><span class="badge badge-blue">Base</span></td>
+        </tr>
+        <tr class="clickable" onclick="openDrill({by:'division',value:'',title:'Excise duty breakdown'})">
+          <td>Excise Duty (15%)</td><td style="text-align:right">${fmtN(s.excise_total)}</td><td style="text-align:right">${fmtN(expectedExcise)}</td>
+          <td style="text-align:right;color:${Math.abs(exciseDiff)>1?'var(--coral)':'var(--green)'}">${exciseDiff>=0?'+':''}${fmtN(exciseDiff)}</td>
+          <td><span class="badge ${Math.abs(exciseDiff)>1?'badge-red':'badge-green'}">${Math.abs(exciseDiff)<=1?'OK':'Review'}</span></td>
+        </tr>
+        <tr class="clickable" onclick="openDrill({by:'division',value:'',title:'VAT breakdown'})">
+          <td>VAT (16%)</td><td style="text-align:right">${fmtN(s.vat_total)}</td><td style="text-align:right">${fmtN(expectedVAT)}</td>
+          <td style="text-align:right;color:${Math.abs(vatDiff)>1?'var(--coral)':'var(--green)'}">${vatDiff>=0?'+':''}${fmtN(vatDiff)}</td>
+          <td><span class="badge ${Math.abs(vatDiff)>1?'badge-red':'badge-green'}">${Math.abs(vatDiff)<=1?'OK':'Review'}</span></td>
+        </tr>
+        <tr style="font-weight:700;background:var(--bg2)">
+          <td>Total Due</td><td style="text-align:right" colspan="3">${fmtN(s.account_total)}</td><td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">${secTitle('section.chargeback')}</div>
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Division</th><th style="text-align:right">Lines</th><th style="text-align:right">Pre-Tax</th><th style="text-align:right">Excise</th><th style="text-align:right">VAT</th><th style="text-align:right">Total (KES)</th><th></th></tr></thead>
+      <tbody>${S.divisions.map(d => `
+        <tr class="clickable" onclick="openDrill({by:'division',value:'${escH(d.division)}',title:'${escH(d.division)} — Finance detail'})">
+          <td><strong>${escH(d.division)}</strong></td>
+          <td style="text-align:right">${d.count}</td>
+          <td style="text-align:right">—</td><td style="text-align:right">—</td><td style="text-align:right">—</td>
+          <td style="text-align:right;color:var(--blue);font-weight:600">${fmtN(d.total)}</td>
+          <td style="color:var(--blue);font-size:11px">↗</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+  </div>`;
+}
+
+// ─── ICT TAB ──────────────────────────────────────────────────────────────────
+function renderICT() {
+  return `
+  <div class="card">
+    <div class="card-title">${secTitle('section.subscriber_search')}</div>
+    <div class="search-bar">
+      <input id="sub-search" placeholder="Search name or number…" oninput="debounceSearch(this.value)">
+      <select id="div-filter" class="hselect" onchange="filterByDiv(this.value)">
+        <option value="">All divisions</option>
+        ${S.divisions.map(d => `<option value="${escH(d.division)}">${escH(d.division)}</option>`).join('')}
+      </select>
+    </div>
+    <div id="sub-table-wrap"><div class="spinner"></div></div>
+  </div>`;
+}
+
+async function loadSubscribers(billId, search, division) {
+  const url = `/api/bills/${billId}/subscribers?limit=80&search=${encodeURIComponent(search)}&division=${encodeURIComponent(division)}`;
+  const data = await apiFetch(url);
+  const wrap = document.getElementById('sub-table-wrap');
+  if (!wrap) return;
+  if (!data || !data.subscribers.length) { wrap.innerHTML = '<div class="empty">No subscribers found.</div>'; return; }
+  wrap.innerHTML = `
+    <div style="font-size:12px;color:var(--fg3);margin-bottom:8px">${data.total} subscribers — showing ${data.subscribers.length}</div>
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Name</th><th>Number</th><th>Division</th><th>Tariff</th><th style="text-align:right">Amount (KES)</th><th>CDRs</th><th>Status</th></tr></thead>
+      <tbody>${data.subscribers.map(s => `
+        <tr class="clickable ${s.is_anomaly?'anom-row':''}" onclick="openDrill({by:'subscriber',value:'${escH(s.subscriber_number)}',title:'${escH(s.raw_name)}'})">
+          <td><div style="font-weight:500">${escH(s.raw_name)}</div></td>
+          <td style="color:var(--fg3)">${escH(s.subscriber_number)}</td>
+          <td><span class="badge badge-blue" style="font-size:10px">${escH(s.division)}</span></td>
+          <td style="font-size:11px;color:var(--fg3);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escH(s.tariff_plan)}</td>
+          <td style="text-align:right;font-weight:600;color:var(--blue)">${fmtN(s.amount_due_kes)}</td>
+          <td style="color:var(--fg3)">${s.cdr_count}</td>
+          <td>${s.is_anomaly ? `<span class="badge badge-red">⚠</span>` : '<span class="badge badge-green">OK</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+function debounceSearch(q) {
+  clearTimeout(S.searchTimer);
+  S.searchTimer = setTimeout(() => {
+    const div = document.getElementById('div-filter')?.value || '';
+    loadSubscribers(S.activeBillId, q, div);
+  }, 300);
+}
+function filterByDiv(div) {
+  const q = document.getElementById('sub-search')?.value || '';
+  loadSubscribers(S.activeBillId, q, div);
+}
+
+// ─── OPERATIONS TAB ──────────────────────────────────────────────────────────
+function renderOperations() {
+  return `
+  <div class="grid4">
+    ${kpiCard('kpi.anomalies', S.summary.anomaly_count, 'flagged lines', 'anomaly', '', 'View all anomalies')}
+    ${kpiCard('kpi.subscribers', S.summary.subscriber_count, 'total lines', 'division', '', 'View all')}
+    ${kpiCard('kpi.top_division', escH(S.summary.top_division), 'highest spend', 'division', S.summary.top_division, 'Drill in')}
+    ${kpiCard('kpi.total_spend', 'KES ' + fmtN(S.summary.account_total), 'this bill', 'division', '', 'Full detail')}
+  </div>
+  <div class="card">
+    <div class="card-title">${secTitle('section.anomaly_tracker')}</div>
+    <div id="anomaly-wrap"><div class="spinner"></div></div>
+  </div>`;
+}
+
+async function loadAnomalies(billId) {
+  const anomalies = await apiFetch(`/api/bills/${billId}/anomalies`) || [];
+  const wrap = document.getElementById('anomaly-wrap');
+  if (!wrap) return;
+  if (!anomalies.length) { wrap.innerHTML = '<div class="empty" style="color:var(--green)">✓ No anomalies detected in this bill.</div>'; return; }
+  const severity = a => {
+    if (a.anomaly_reason.includes('high spend')) return 'badge-red';
+    if (a.anomaly_reason.includes('unclassified')) return 'badge-amber';
+    return 'badge-amber';
+  };
+  wrap.innerHTML = `
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Subscriber</th><th>Division</th><th style="text-align:right">Amount (KES)</th><th>CDRs</th><th>Reason</th><th></th></tr></thead>
+      <tbody>${anomalies.map(a => `
+        <tr class="clickable anom-row" onclick="openDrill({by:'subscriber',value:'${escH(a.subscriber_number)}',title:'${escH(a.raw_name)}'})">
+          <td><div style="font-weight:500">${escH(a.raw_name)}</div><div style="font-size:11px;color:var(--fg3)">${escH(a.subscriber_number)}</div></td>
+          <td><span class="badge badge-blue" style="font-size:10px">${escH(a.division)}</span></td>
+          <td style="text-align:right;font-weight:600;color:var(--coral)">${fmtN(a.amount_due_kes)}</td>
+          <td style="color:var(--fg3)">${a.cdr_count}</td>
+          <td><span class="badge ${severity(a)}" style="font-size:10px">${escH(a.anomaly_reason)}</span></td>
+          <td style="color:var(--blue);font-size:11px">↗</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+// ─── TRENDS TAB ──────────────────────────────────────────────────────────────
+function renderTrends() {
+  return `
+  <div class="card">
+    <div class="card-title">${secTitle('section.trend_overview')}</div>
+    <div class="chart-wrap-tall"><canvas id="trend-total-chart"></canvas></div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">${secTitle('section.division_trend')}</div>
+      <div class="chart-wrap-tall"><canvas id="trend-div-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Subscribers & anomalies</div>
+      <div class="chart-wrap-tall"><canvas id="trend-subs-chart"></canvas></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">${secTitle('section.top_spenders')}</div>
+    <div id="top-spenders-wrap"><div class="spinner"></div></div>
+  </div>`;
+}
+
+function renderTrendsCharts() {
+  const t = S.trends;
+  if (!t.length) return;
+
+  // Total spend chart - bars are clickable
+  const ctx1 = document.getElementById('trend-total-chart')?.getContext('2d');
+  if (ctx1) {
+    S.charts.trendTotal = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: t.map(b => b.statement_date),
+        datasets: [{ label: 'Total Spend (KES)', data: t.map(b => b.account_total),
+                     backgroundColor: 'rgba(37,99,235,.7)', borderRadius: 4 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        onClick: (evt, els) => {
+          if (!els.length) return;
+          const b = t[els[0].index];
+          if (b && S.activeBillId) openDrill({ by: 'division', value: '', title: `All lines — ${b.statement_date}` });
+        },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => 'KES ' + fmtN(ctx.raw) } } },
+        scales: { y: { ticks: { callback: v => fmtN(v) } } },
+      },
+    });
+  }
+
+  // Division trend (stacked)
+  const allDivs = [...new Set(t.flatMap(b => Object.keys(b.divisions || {})))];
+  const COLOURS = ['#2563eb','#0d9488','#d97706','#dc2626','#7c3aed','#16a34a','#f59e0b','#6366f1'];
+  const ctx2 = document.getElementById('trend-div-chart')?.getContext('2d');
+  if (ctx2) {
+    S.charts.trendDiv = new Chart(ctx2, {
+      type: 'bar',
+      data: {
+        labels: t.map(b => b.statement_date),
+        datasets: allDivs.map((div, i) => ({
+          label: div,
+          data: t.map(b => (b.divisions || {})[div] || 0),
+          backgroundColor: COLOURS[i % COLOURS.length] + 'cc',
+          borderRadius: 2,
+        })),
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        onClick: (evt, els) => {
+          if (!els.length) return;
+          const ds = S.charts.trendDiv.data.datasets[els[0].datasetIndex];
+          if (ds) openDrill({ by: 'division', value: ds.label, title: `Division: ${ds.label}` });
+        },
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 10, padding: 8 } },
+                   tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': KES ' + fmtN(ctx.raw) } } },
+        scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => fmtN(v) } } },
+      },
+    });
+  }
+
+  // Subscribers + anomalies
+  const ctx3 = document.getElementById('trend-subs-chart')?.getContext('2d');
+  if (ctx3) {
+    S.charts.trendSubs = new Chart(ctx3, {
+      type: 'line',
+      data: {
+        labels: t.map(b => b.statement_date),
+        datasets: [
+          { label: 'Subscribers', data: t.map(b => b.subscriber_count),
+            borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.08)', tension: .3, fill: true, yAxisID: 'y' },
+          { label: 'Anomalies', data: t.map(b => b.anomaly_count),
+            borderColor: '#dc2626', backgroundColor: 'rgba(220,38,38,.1)', tension: .3, fill: true, yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10 } } },
+        scales: { y: { position: 'left' }, y1: { position: 'right', grid: { drawOnChartArea: false } } },
+      },
+    });
+  }
+
+  // Top spenders table
+  const wrap = document.getElementById('top-spenders-wrap');
+  if (wrap && S.topSpenders.length) {
+    wrap.innerHTML = `
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Division</th><th style="text-align:right">Total (KES)</th><th style="text-align:right">Months</th><th></th></tr></thead>
+        <tbody>${S.topSpenders.map(sp => `
+          <tr class="clickable" onclick="openDrill({by:'subscriber',value:'${escH(sp.subscriber_number)}',title:'${escH(sp.raw_name)}'})">
+            <td><div style="font-weight:500">${escH(sp.raw_name)}</div><div style="font-size:11px;color:var(--fg3)">${escH(sp.subscriber_number)}</div></td>
+            <td><span class="badge badge-blue" style="font-size:10px">${escH(sp.division)}</span></td>
+            <td style="text-align:right;font-weight:600;color:var(--blue)">${fmtN(sp.total_all_months)}</td>
+            <td style="text-align:right">${sp.month_count}</td>
+            <td style="color:var(--blue);font-size:11px">↗</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>`;
+  } else if (wrap) {
+    wrap.innerHTML = '<div class="empty">Load multiple bills to see trends.</div>';
+  }
+}
+
+// ─── CHART INIT ──────────────────────────────────────────────────────────────
+function initTabCharts(tab) {
+  if (tab === 'executive') {
+    const divCtx = document.getElementById('exec-div-chart')?.getContext('2d');
+    const COLOURS = ['#2563eb','#0d9488','#d97706','#dc2626','#7c3aed','#16a34a','#f59e0b','#6366f1'];
+    if (divCtx && S.divisions.length) {
+      S.charts.execDiv = new Chart(divCtx, {
+        type: 'doughnut',
+        data: { labels: S.divisions.map(d => d.division),
+                datasets: [{ data: S.divisions.map(d => d.total),
+                             backgroundColor: COLOURS.map(c => c + 'cc'), borderWidth: 1 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          onClick: (evt, els) => {
+            if (!els.length) return;
+            const div = S.divisions[els[0].index];
+            if (div) openDrill({ by: 'division', value: div.division, title: 'Division: ' + div.division });
+          },
+          plugins: { legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10, padding: 8 } },
+                     tooltip: { callbacks: { label: ctx => ctx.label + ': KES ' + fmtN(ctx.raw) } } },
+        },
+      });
+    }
+    const chargeCtx = document.getElementById('exec-charge-chart')?.getContext('2d');
+    if (chargeCtx && S.summary) {
+      const s = S.summary;
+      S.charts.execCharge = new Chart(chargeCtx, {
+        type: 'bar',
+        data: {
+          labels: ['Pre-Tax', 'Excise (15%)', 'VAT (16%)', 'Outstanding'],
+          datasets: [{ data: [s.pre_tax_total, s.excise_total, s.vat_total, s.outstanding_total],
+                       backgroundColor: ['#2563ebcc','#d97706cc','#0d9488cc','#dc2626cc'], borderRadius: 4 }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          onClick: (evt, els) => {
+            if (!els.length) return;
+            const labels = ['pre_tax','excise','vat','outstanding'];
+            openDrill({ by: 'division', value: '', title: labels[els[0].index] + ' — all lines' });
+          },
+          indexAxis: 'y',
+          plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => 'KES ' + fmtN(ctx.raw) } } },
+          scales: { x: { ticks: { callback: v => fmtN(v) } } },
+        },
+      });
+    }
+  }
+}
+
+// ─── IMPORT ──────────────────────────────────────────────────────────────────
+function openImport() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.pdf'; input.multiple = true;
+  input.onchange = async () => {
+    for (const file of input.files) {
+      const fd = new FormData(); fd.append('file', file);
+      const r = await fetch('/api/bills/upload', { method: 'POST', body: fd });
+      const data = await r.json();
+      console.log('Uploaded', file.name, data);
+    }
+    await loadOrgs();
+    await loadBills(S.activeOrgId);
+    if (S.activeBillId) await loadBillData(S.activeBillId);
+    renderTab(S.activeTab);
+  };
+  input.click();
+}
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function fmtN(n) {
+  if (n == null || isNaN(n)) return '0';
+  return Number(n).toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+function escH(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function kpiCard(labelKey, value, sub, drillBy, drillValue, drillHint) {
+  return `<div class="kpi" onclick="openDrill({by:'${drillBy}',value:'${escH(drillValue)}',title:'${escH(lbl(labelKey))}'})">
+    <div class="kpi-label">${escH(lbl(labelKey))}</div>
+    <div class="kpi-value">${value}</div>
+    ${sub ? `<div class="kpi-sub">${sub}</div>` : ''}
+    <div class="kpi-drill">▼ ${drillHint||'drill down'}</div>
+  </div>`;
+}
+function secTitle(key) {
+  return `${escH(lbl(key))} <button class="edit-label" onclick="event.stopPropagation();promptRename('${key}')" title="Rename section">✎</button>`;
+}
+function promptRename(key) {
+  const cur = lbl(key);
+  const val = prompt(`Rename "${cur}" to:`, cur);
+  if (val && val.trim()) {
+    const labels = loadLabels();
+    labels[key] = val.trim();
+    localStorage.setItem('tl_labels', JSON.stringify(labels));
+    renderTabs();
+    renderTab(S.activeTab);
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUBSCRIBER MANAGEMENT TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function renderSubscribers() {
+  return `
+  <div class="grid3">
+    <div class="kpi" onclick="switchSubView('registry')">
+      <div class="kpi-label">${escH(lbl('section.sub_registry'))}</div>
+      <div class="kpi-value" id="sub-kpi-total">–</div>
+      <div class="kpi-sub">known lines</div>
+    </div>
+    <div class="kpi" onclick="switchSubView('lifecycle')">
+      <div class="kpi-label">${escH(lbl('section.lifecycle'))}</div>
+      <div class="kpi-value" id="sub-kpi-events">–</div>
+      <div class="kpi-sub">lifecycle events</div>
+    </div>
+    <div class="kpi" onclick="switchSubView('tags')">
+      <div class="kpi-label">${escH(lbl('section.tag_manager'))}</div>
+      <div class="kpi-value" id="sub-kpi-tags">–</div>
+      <div class="kpi-sub">unique tags</div>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button id="svbtn-registry"  class="hbtn primary" onclick="switchSubView('registry')">Registry</button>
+      <button id="svbtn-lifecycle" class="hbtn" onclick="switchSubView('lifecycle')">Lifecycle</button>
+      <button id="svbtn-tags"      class="hbtn" onclick="switchSubView('tags')">Tag Manager</button>
+      <span class="header-sep"></span>
+      <button class="hbtn" onclick="exportSubscribersCSV()">⬇ Export CSV</button>
+    </div>
+    <div id="sub-view-body"><div class="spinner"></div></div>
+  </div>`;
+}
+
+let _subView = 'registry';
+function switchSubView(view) {
+  _subView = view;
+  ['registry','lifecycle','tags'].forEach(v => {
+    const btn = document.getElementById('svbtn-' + v);
+    if (btn) btn.className = v === view ? 'hbtn primary' : 'hbtn';
+  });
+  if (view === 'registry')  renderSubRegistry();
+  if (view === 'lifecycle') renderSubLifecycle();
+  if (view === 'tags')      renderSubTags();
+}
+
+async function loadSubscriberRegistry() {
+  if (!S.activeOrgId) return;
+  const [subData, tags, lifecycle] = await Promise.all([
+    apiFetch(`/api/orgs/${S.activeOrgId}/subscribers?limit=80`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/tags`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/lifecycle`),
+  ]);
+  S.subscribers = subData || { total: 0, profiles: [] };
+  S.tags = tags || [];
+  S.lifecycle = lifecycle || { events: [], summary: {} };
+  // Update KPI tiles
+  const kpiTotal = document.getElementById('sub-kpi-total');
+  const kpiEv = document.getElementById('sub-kpi-events');
+  const kpiTags = document.getElementById('sub-kpi-tags');
+  if (kpiTotal) kpiTotal.textContent = S.subscribers.total;
+  if (kpiEv) kpiEv.textContent = (S.lifecycle.events || []).length;
+  if (kpiTags) kpiTags.textContent = S.tags.length;
+  renderSubRegistry();
+}
+
+function renderSubRegistry() {
+  const body = document.getElementById('sub-view-body');
+  if (!body) return;
+  const profiles = S.subscribers.profiles || [];
+  const divisions = [...new Set(profiles.map(p => p.division).filter(Boolean))].sort();
+
+  body.innerHTML = `
+    <div class="search-bar" style="margin-bottom:10px">
+      <input id="sreg-search" placeholder="Search name or number…" oninput="debounceSubSearch(this.value)">
+      <select id="sreg-div" class="hselect" onchange="filterSubDiv(this.value)">
+        <option value="">All divisions</option>
+        ${divisions.map(d => `<option value="${escH(d)}">${escH(d)}</option>`).join('')}
+      </select>
+      <select id="sreg-tag" class="hselect" onchange="filterSubTag(this.value)">
+        <option value="">All tags</option>
+        ${S.tags.map(t => `<option value="${escH(t)}">${escH(t)}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-size:12px;color:var(--fg3);margin-bottom:8px">${S.subscribers.total} subscribers</div>
+    <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name / Number</th><th>Division</th><th>Tags</th>
+          <th>Device</th><th>Tariff</th>
+          <th style="text-align:right">Latest (KES)</th>
+          <th>First Seen</th><th>Last Seen</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="sreg-tbody">
+        ${profiles.map(p => subRegistryRow(p)).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+function subRegistryRow(p) {
+  const tagHtml = (p.tags || '').split(',').filter(Boolean).map(t =>
+    `<span class="badge badge-blue" style="font-size:10px;margin-right:2px">${escH(t.trim())}</span>`
+  ).join('');
+  return `<tr class="${p.is_anomaly ? 'anom-row' : ''}">
+    <td>
+      <div style="font-weight:500">${escH(p.display_name || p.subscriber_number)}</div>
+      <div style="font-size:11px;color:var(--fg3)">${escH(p.subscriber_number)}</div>
+    </td>
+    <td><span class="badge badge-blue" style="font-size:10px">${escH(p.division || '–')}</span></td>
+    <td>${tagHtml || '<span style="color:var(--fg3);font-size:11px">none</span>'}</td>
+    <td style="font-size:11px;color:var(--fg3)">${escH(p.device_type || '–')}</td>
+    <td style="font-size:11px;color:var(--fg3);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escH(p.latest_tariff || p.tariff_override || '–')}</td>
+    <td style="text-align:right;font-weight:600;color:var(--blue)">${fmtN(p.latest_amount_kes)}</td>
+    <td style="font-size:11px;color:var(--fg3)">${escH(p.first_seen_date || '–')}</td>
+    <td style="font-size:11px;color:var(--fg3)">${escH(p.last_seen_date || '–')}</td>
+    <td><button class="hbtn" style="padding:3px 8px;font-size:11px" onclick="openSubEditor('${escH(p.subscriber_number)}')">Edit</button></td>
+  </tr>`;
+}
+
+function renderSubLifecycle() {
+  const body = document.getElementById('sub-view-body');
+  if (!body) return;
+  const events = S.lifecycle.events || [];
+  const sum = S.lifecycle.summary || {};
+  if (!events.length) {
+    body.innerHTML = `<div class="empty">
+      ${S.lifecycle.message || 'No lifecycle events found.'}
+      ${(S.lifecycle.bills_loaded || 0) < 2 ? '<br><small>Import at least 2 bills to see lifecycle events.</small>' : ''}
+    </div>`;
+    return;
+  }
+  const ICONS = { new_activation: '🟢', deactivation: '🔴', plan_change: '🔄' };
+  const LABELS = { new_activation: 'New Activation', deactivation: 'Deactivated', plan_change: 'Plan Change' };
+  body.innerHTML = `
+    <div class="grid3" style="margin-bottom:12px">
+      <div class="kpi"><div class="kpi-label">New Activations</div><div class="kpi-value" style="color:var(--green)">${sum.new_activations || 0}</div></div>
+      <div class="kpi"><div class="kpi-label">Deactivations</div><div class="kpi-value" style="color:var(--coral)">${sum.deactivations || 0}</div></div>
+      <div class="kpi"><div class="kpi-label">Plan Changes</div><div class="kpi-value" style="color:var(--amber)">${sum.plan_changes || 0}</div></div>
+    </div>
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Event</th><th>Subscriber</th><th>Division</th><th>Period</th><th>Detail</th><th style="text-align:right">KES</th></tr></thead>
+      <tbody>${events.map(e => `
+        <tr>
+          <td><span class="badge ${e.event === 'new_activation' ? 'badge-green' : e.event === 'deactivation' ? 'badge-red' : 'badge-amber'}" style="font-size:10px">${ICONS[e.event]} ${LABELS[e.event]}</span></td>
+          <td><div style="font-weight:500">${escH(e.name)}</div><div style="font-size:11px;color:var(--fg3)">${escH(e.subscriber_number)}</div></td>
+          <td><span class="badge badge-blue" style="font-size:10px">${escH(e.division)}</span></td>
+          <td style="font-size:12px;color:var(--fg3)">${escH(e.period)}</td>
+          <td style="font-size:11px;color:var(--fg3)">${escH(e.detail)}</td>
+          <td style="text-align:right;font-size:12px">${e.amount_kes ? fmtN(e.amount_kes) : '–'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+function renderSubTags() {
+  const body = document.getElementById('sub-view-body');
+  if (!body) return;
+  const profiles = S.subscribers.profiles || [];
+  // Tag frequency map
+  const tagMap = {};
+  profiles.forEach(p => {
+    (p.tags || '').split(',').filter(Boolean).forEach(t => {
+      const k = t.trim();
+      if (k) tagMap[k] = (tagMap[k] || []).concat(p);
+    });
+  });
+  const sortedTags = Object.entries(tagMap).sort((a,b) => b[1].length - a[1].length);
+  const untagged = profiles.filter(p => !p.tags || !p.tags.trim());
+
+  body.innerHTML = `
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <strong style="font-size:13px">${S.tags.length} tags in use</strong>
+      <button class="hbtn primary" onclick="openBulkTagger()">+ Bulk Tag Subscribers</button>
+    </div>
+    ${sortedTags.length ? `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+      ${sortedTags.map(([tag, subs]) => `
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer"
+             onclick="filterAndShowTag('${escH(tag)}')">
+          <div style="font-weight:600;font-size:13px">${escH(tag)}</div>
+          <div style="font-size:11px;color:var(--fg3)">${subs.length} subscriber${subs.length !== 1 ? 's' : ''}</div>
+        </div>`).join('')}
+    </div>` : ''}
+    ${untagged.length ? `
+    <div style="color:var(--fg3);font-size:12px;margin-bottom:8px">
+      ${untagged.length} subscriber${untagged.length !== 1 ? 's' : ''} without tags
+    </div>
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Name</th><th>Number</th><th>Division</th><th></th></tr></thead>
+      <tbody>${untagged.slice(0,20).map(p => `
+        <tr>
+          <td>${escH(p.display_name || p.subscriber_number)}</td>
+          <td style="color:var(--fg3)">${escH(p.subscriber_number)}</td>
+          <td><span class="badge badge-blue" style="font-size:10px">${escH(p.division||'–')}</span></td>
+          <td><button class="hbtn" style="padding:3px 8px;font-size:11px" onclick="openSubEditor('${escH(p.subscriber_number)}')">Tag</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>` : '<div style="color:var(--green);font-size:13px">✓ All subscribers are tagged.</div>'}`;
+}
+
+function debounceSubSearch(q) {
+  clearTimeout(S.searchTimer);
+  S.searchTimer = setTimeout(async () => {
+    if (!S.activeOrgId) return;
+    const div = document.getElementById('sreg-div')?.value || '';
+    const tag = document.getElementById('sreg-tag')?.value || '';
+    const data = await apiFetch(`/api/orgs/${S.activeOrgId}/subscribers?limit=80&search=${encodeURIComponent(q)}&division=${encodeURIComponent(div)}&tag=${encodeURIComponent(tag)}`);
+    if (data) {
+      S.subscribers = data;
+      const tbody = document.getElementById('sreg-tbody');
+      if (tbody) tbody.innerHTML = data.profiles.map(p => subRegistryRow(p)).join('');
+    }
+  }, 300);
+}
+
+async function filterSubDiv(div) {
+  if (!S.activeOrgId) return;
+  const q = document.getElementById('sreg-search')?.value || '';
+  const data = await apiFetch(`/api/orgs/${S.activeOrgId}/subscribers?limit=80&search=${encodeURIComponent(q)}&division=${encodeURIComponent(div)}`);
+  if (data) { S.subscribers = data; const tbody = document.getElementById('sreg-tbody'); if (tbody) tbody.innerHTML = data.profiles.map(p => subRegistryRow(p)).join(''); }
+}
+
+async function filterSubTag(tag) {
+  if (!S.activeOrgId) return;
+  const q = document.getElementById('sreg-search')?.value || '';
+  const data = await apiFetch(`/api/orgs/${S.activeOrgId}/subscribers?limit=80&search=${encodeURIComponent(q)}&tag=${encodeURIComponent(tag)}`);
+  if (data) { S.subscribers = data; const tbody = document.getElementById('sreg-tbody'); if (tbody) tbody.innerHTML = data.profiles.map(p => subRegistryRow(p)).join(''); }
+}
+
+function filterAndShowTag(tag) {
+  _subView = 'registry';
+  document.getElementById('svbtn-registry').className = 'hbtn primary';
+  document.getElementById('svbtn-tags').className = 'hbtn';
+  renderSubRegistry();
+  setTimeout(() => {
+    const sel = document.getElementById('sreg-tag');
+    if (sel) { sel.value = tag; filterSubTag(tag); }
+  }, 50);
+}
+
+// ── Subscriber Edit Modal ─────────────────────────────────────────────────────
+function openSubEditor(subNum) {
+  const profile = S.subscribers.profiles.find(p => p.subscriber_number === subNum);
+  const divisions = [...new Set((S.subscribers.profiles || []).map(p => p.division).filter(Boolean))].sort();
+  const tagOptions = S.tags;
+
+  const modal = document.createElement('div');
+  modal.id = 'sub-edit-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--card);border-radius:var(--radius);padding:20px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <strong style="font-size:15px">Edit Subscriber</strong>
+        <button class="drill-close" onclick="document.getElementById('sub-edit-modal').remove()">✕</button>
+      </div>
+      <div style="font-size:12px;color:var(--fg3);margin-bottom:16px">${escH(subNum)}</div>
+
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 140px;font-size:12px;color:var(--fg2)">Display name</label>
+        <input id="se-name" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" value="${escH(profile?.display_name || '')}">
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 140px;font-size:12px;color:var(--fg2)">Division / Cost Centre</label>
+        <input id="se-div" list="se-div-list" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" value="${escH(profile?.division_override || '')}">
+        <datalist id="se-div-list">${divisions.map(d => `<option value="${escH(d)}">`).join('')}</datalist>
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 140px;font-size:12px;color:var(--fg2)">Tags <span style="color:var(--fg3)">(comma-separated)</span></label>
+        <input id="se-tags" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" value="${escH(profile?.tags || '')}" placeholder="e.g. executive, contractor">
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 140px;font-size:12px;color:var(--fg2)">Device type</label>
+        <select id="se-device" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)">
+          ${['', 'Handset', 'SIM Card', 'Modem / Dongle', 'Fixed Line', 'Shared Pool', 'IoT / M2M'].map(opt =>
+            `<option value="${opt}" ${(profile?.device_type || '') === opt ? 'selected' : ''}>${opt || '— Not set —'}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 140px;font-size:12px;color:var(--fg2)">Expected tariff</label>
+        <input id="se-tariff" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" value="${escH(profile?.tariff_override || '')}" placeholder="e.g. Business Max 50">
+      </div>
+      <div class="ld-row" style="margin-bottom:16px">
+        <label style="flex:0 0 140px;font-size:12px;color:var(--fg2)">Notes</label>
+        <input id="se-notes" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" value="${escH(profile?.notes || '')}">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="hbtn primary" style="flex:1" onclick="saveSubEdit('${escH(subNum)}')">Save changes</button>
+        <button class="hbtn" onclick="document.getElementById('sub-edit-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveSubEdit(subNum) {
+  const body = {
+    display_name: document.getElementById('se-name').value.trim(),
+    division_override: document.getElementById('se-div').value.trim(),
+    tags: document.getElementById('se-tags').value.trim(),
+    device_type: document.getElementById('se-device').value,
+    tariff_override: document.getElementById('se-tariff').value.trim(),
+    notes: document.getElementById('se-notes').value.trim(),
+  };
+  const r = await fetch(`/api/orgs/${S.activeOrgId}/subscribers/${encodeURIComponent(subNum)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  document.getElementById('sub-edit-modal')?.remove();
+  if (r.ok) { await loadSubscriberRegistry(); }
+  else alert('Save failed. Please try again.');
+}
+
+function openBulkTagger() {
+  const tag = prompt('Enter a tag to apply to all currently-filtered subscribers:', '');
+  if (!tag || !tag.trim()) return;
+  const profiles = S.subscribers.profiles || [];
+  if (!profiles.length) { alert('No subscribers in current view.'); return; }
+  if (!confirm(`Apply tag "${tag.trim()}" to ${profiles.length} subscribers?`)) return;
+  Promise.all(profiles.map(p => {
+    const existingTags = (p.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+    if (existingTags.includes(tag.trim())) return Promise.resolve();
+    const newTags = [...existingTags, tag.trim()].join(', ');
+    return fetch(`/api/orgs/${S.activeOrgId}/subscribers/${encodeURIComponent(p.subscriber_number)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags: newTags }),
+    });
+  })).then(() => loadSubscriberRegistry());
+}
+
+function exportSubscribersCSV() {
+  const profiles = S.subscribers.profiles || [];
+  if (!profiles.length) { alert('No data to export.'); return; }
+  const rows = [['Number','Display Name','Division','Tags','Device','Tariff','Latest KES','First Seen','Last Seen']];
+  profiles.forEach(p => rows.push([p.subscriber_number, p.display_name, p.division,
+    p.tags, p.device_type, p.latest_tariff||p.tariff_override, p.latest_amount_kes, p.first_seen_date, p.last_seen_date]));
+  const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'subscribers.csv'; a.click();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BUDGET & FORECASTING TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function renderBudget() {
+  return `
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <button id="bvbtn-bva"       class="hbtn primary" onclick="switchBudgetView('bva')">Budget vs Actual</button>
+    <button id="bvbtn-forecast"  class="hbtn" onclick="switchBudgetView('forecast')">Forecast</button>
+    <button id="bvbtn-alerts"    class="hbtn" onclick="switchBudgetView('alerts')">Alerts</button>
+    <button id="bvbtn-benchmarks" class="hbtn" onclick="switchBudgetView('benchmarks')">Cost-per-Head</button>
+    <span class="header-sep"></span>
+    <button class="hbtn" onclick="openBudgetImport()">⊕ Import Budget CSV</button>
+    <button class="hbtn" onclick="downloadBudgetTemplate()">⬇ CSV Template</button>
+  </div>
+  <div id="budget-view-body"><div class="spinner"></div></div>`;
+}
+
+let _budgetView = 'bva';
+function switchBudgetView(view) {
+  _budgetView = view;
+  ['bva','forecast','alerts','benchmarks'].forEach(v => {
+    const btn = document.getElementById('bvbtn-' + v);
+    if (btn) btn.className = v === view ? 'hbtn primary' : 'hbtn';
+  });
+  if (view === 'bva')        renderBVA();
+  if (view === 'forecast')   renderForecastView();
+  if (view === 'alerts')     renderAlertsView();
+  if (view === 'benchmarks') renderBenchmarksView();
+}
+
+async function loadBudgetData() {
+  if (!S.activeOrgId) return;
+  const [bva, forecast, breaches, alerts] = await Promise.all([
+    apiFetch(`/api/orgs/${S.activeOrgId}/budget-vs-actual`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/forecast`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/alert-breaches`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/alerts`),
+  ]);
+  S.budgetVsActual = bva || [];
+  S.forecast = forecast || null;
+  S.alertBreaches = breaches || [];
+  S.alerts = alerts || [];
+  renderBVA();
+}
+
+// ── Budget vs Actual ──────────────────────────────────────────────────────────
+function renderBVA() {
+  const body = document.getElementById('budget-view-body');
+  if (!body) return;
+
+  const data = S.budgetVsActual;
+  const latestPeriod = data[data.length - 1];
+
+  if (!data.length) {
+    body.innerHTML = `<div class="empty">
+      No bills loaded yet.<br><small>Import a bill PDF first, then add budget figures.</small>
+    </div>`;
+    return;
+  }
+
+  // Alert breach banner
+  const breachHtml = S.alertBreaches.length ? `
+    <div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:12px 16px;margin-bottom:12px">
+      <strong style="color:#991b1b">⚠ ${S.alertBreaches.length} spend alert${S.alertBreaches.length>1?'s':''} breached</strong>
+      <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
+        ${S.alertBreaches.map(b => `
+          <span class="badge badge-red">${escH(b.name)}: KES ${fmtN(b.actual_kes)} (+${fmtN(b.overage_kes)} over limit)</span>
+        `).join('')}
+      </div>
+    </div>` : '';
+
+  // Period selector
+  const periodOpts = data.map((d,i) => `<option value="${i}" ${i===data.length-1?'selected':''}>${escH(d.period)}</option>`).join('');
+
+  body.innerHTML = breachHtml + `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <label style="font-size:13px;font-weight:500">Period:</label>
+      <select id="bva-period-sel" class="hselect" onchange="renderBVAPeriod(parseInt(this.value))">${periodOpts}</select>
+      <button class="hbtn" onclick="openBudgetEditor()" style="margin-left:auto">✎ Edit Budgets</button>
+    </div>
+    <div id="bva-period-content"></div>
+    <div class="card" style="margin-top:12px">
+      <div class="card-title">${secTitle('section.bva')} — Trend</div>
+      <div class="chart-wrap-tall"><canvas id="bva-trend-chart"></canvas></div>
+    </div>`;
+
+  renderBVAPeriod(data.length - 1);
+  renderBVATrendChart();
+}
+
+function renderBVAPeriod(periodIdx) {
+  const period = S.budgetVsActual[periodIdx];
+  if (!period) return;
+  const container = document.getElementById('bva-period-content');
+  if (!container) return;
+
+  const noBudget = period.divisions.every(d => !d.budget_kes);
+
+  container.innerHTML = `
+    <div class="grid3" style="margin-bottom:12px">
+      <div class="kpi">
+        <div class="kpi-label">Actual Spend</div>
+        <div class="kpi-value">KES ${fmtN(period.total_actual)}</div>
+      </div>
+      <div class="kpi ${period.total_budget ? (period.total_actual > period.total_budget ? 'active' : '') : ''}">
+        <div class="kpi-label">Budget</div>
+        <div class="kpi-value">${period.total_budget ? 'KES ' + fmtN(period.total_budget) : '–'}</div>
+        ${noBudget ? '<div class="kpi-sub">No budget set — <a href="#" onclick="openBudgetEditor();return false">add budgets</a></div>' : ''}
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Variance</div>
+        <div class="kpi-value" style="color:${(period.total_actual - period.total_budget) > 0 ? 'var(--coral)' : 'var(--green)'}">
+          ${period.total_budget ? ((period.total_actual - period.total_budget) >= 0 ? '+' : '') + 'KES ' + fmtN(period.total_actual - period.total_budget) : '–'}
+        </div>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Division</th>
+          <th style="text-align:right">Actual (KES)</th>
+          <th style="text-align:right">Budget (KES)</th>
+          <th style="text-align:right">Variance</th>
+          <th style="text-align:right">% Used</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${period.divisions.map(d => {
+        const statusBadge = d.status === 'over' ? 'badge-red' :
+                            d.status === 'warning' ? 'badge-amber' :
+                            d.status === 'ok' ? 'badge-green' : 'badge-gray';
+        const statusLabel = d.status === 'over' ? '▲ Over budget' :
+                            d.status === 'warning' ? '⚠ Near limit' :
+                            d.status === 'ok' ? '✓ On track' : 'No budget';
+        const barPct = d.pct_of_budget ? Math.min(d.pct_of_budget, 100) : 0;
+        const barColor = d.status === 'over' ? '#dc2626' : d.status === 'warning' ? '#d97706' : '#16a34a';
+        return `<tr class="clickable" onclick="openDrill({by:'division',value:'${escH(d.division)}',title:'${escH(d.division)}'})">
+          <td>
+            <strong>${escH(d.division)}</strong>
+            ${d.budget_kes ? `<div class="top3-bar"><div style="height:4px;background:${barColor};border-radius:2px;width:${barPct}%"></div></div>` : ''}
+          </td>
+          <td style="text-align:right;font-weight:600">${fmtN(d.actual_kes)}</td>
+          <td style="text-align:right;color:var(--fg3)">${d.budget_kes ? fmtN(d.budget_kes) : '–'}</td>
+          <td style="text-align:right;color:${d.variance_kes > 0 ? 'var(--coral)' : d.variance_kes < 0 ? 'var(--green)' : 'var(--fg3)'}">
+            ${d.variance_kes != null ? ((d.variance_kes >= 0 ? '+' : '') + fmtN(d.variance_kes)) : '–'}
+          </td>
+          <td style="text-align:right">${d.pct_of_budget != null ? d.pct_of_budget + '%' : '–'}</td>
+          <td><span class="badge ${statusBadge}" style="font-size:10px">${statusLabel}</span></td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+function renderBVATrendChart() {
+  destroyCharts();
+  const ctx = document.getElementById('bva-trend-chart')?.getContext('2d');
+  if (!ctx || !S.budgetVsActual.length) return;
+  const data = S.budgetVsActual;
+  const hasBudget = data.some(d => d.total_budget > 0);
+  S.charts.bvaTrend = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => d.period),
+      datasets: [
+        { label: 'Actual (KES)', data: data.map(d => d.total_actual),
+          backgroundColor: 'rgba(37,99,235,.7)', borderRadius: 4 },
+        ...(hasBudget ? [{
+          label: 'Budget (KES)', data: data.map(d => d.total_budget || null),
+          type: 'line', borderColor: '#d97706', borderDash: [5,3],
+          pointRadius: 4, fill: false, tension: 0,
+        }] : []),
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10 } },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': KES ' + fmtN(ctx.raw) } },
+      },
+      scales: { y: { ticks: { callback: v => fmtN(v) } } },
+    },
+  });
+}
+
+// ── Budget Editor ─────────────────────────────────────────────────────────────
+async function openBudgetEditor() {
+  const budgets = await apiFetch(`/api/orgs/${S.activeOrgId}/budgets`) || [];
+  const divisions = [...new Set((S.budgetVsActual.flatMap(p => p.divisions.map(d => d.division))))].sort();
+  const periods = [...new Set(S.budgetVsActual.map(p => p.period))].sort();
+
+  const bMap = {};
+  budgets.forEach(b => { bMap[b.division + '|' + b.period] = b; });
+
+  const modal = document.createElement('div');
+  modal.id = 'budget-editor-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--card);border-radius:var(--radius);padding:20px;width:660px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <strong style="font-size:15px">✎ Edit Budgets & Headcount</strong>
+        <button class="drill-close" onclick="document.getElementById('budget-editor-modal').remove()">✕</button>
+      </div>
+      <div style="font-size:12px;color:var(--fg3);margin-bottom:14px">Set monthly budget per division. Changes apply to all future budget vs actual calculations.</div>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Division</th><th>Period</th><th>Budget (KES)</th><th>Headcount</th></tr></thead>
+        <tbody>${divisions.flatMap(div => periods.map(period => {
+          const key = div + '|' + period;
+          const existing = bMap[key] || {};
+          return `<tr>
+            <td style="font-weight:500">${escH(div)}</td>
+            <td style="color:var(--fg3)">${escH(period)}</td>
+            <td><input type="number" data-div="${escH(div)}" data-period="${escH(period)}" data-field="budget_kes"
+                 style="width:120px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px;color:var(--fg)"
+                 value="${existing.budget_kes || ''}" placeholder="0" min="0"></td>
+            <td><input type="number" data-div="${escH(div)}" data-period="${escH(period)}" data-field="headcount"
+                 style="width:80px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px;color:var(--fg)"
+                 value="${existing.headcount || ''}" placeholder="0" min="0"></td>
+          </tr>`;
+        })).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="hbtn primary" style="flex:1" onclick="saveBudgetEdits()">Save all budgets</button>
+        <button class="hbtn" onclick="document.getElementById('budget-editor-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveBudgetEdits() {
+  const modal = document.getElementById('budget-editor-modal');
+  const rows = {};
+  modal.querySelectorAll('input[data-div]').forEach(inp => {
+    const key = inp.dataset.div + '|' + inp.dataset.period;
+    if (!rows[key]) rows[key] = { division: inp.dataset.div, period: inp.dataset.period };
+    rows[key][inp.dataset.field] = parseFloat(inp.value) || 0;
+  });
+  await Promise.all(Object.values(rows).map(row =>
+    fetch(`/api/orgs/${S.activeOrgId}/budgets`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(row),
+    })
+  ));
+  modal.remove();
+  await loadBudgetData();
+}
+
+function openBudgetImport() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.csv';
+  input.onchange = async () => {
+    const fd = new FormData(); fd.append('file', input.files[0]);
+    const r = await fetch(`/api/orgs/${S.activeOrgId}/budgets/import-csv`, { method: 'POST', body: fd });
+    const data = await r.json();
+    alert(`Imported ${data.imported} budget rows.${data.errors.length ? '\n\nErrors:\n' + data.errors.join('\n') : ''}`);
+    await loadBudgetData();
+  };
+  input.click();
+}
+
+function downloadBudgetTemplate() {
+  const divisions = [...new Set((S.budgetVsActual.flatMap(p => p.divisions.map(d => d.division))))].sort();
+  const periods = [...new Set(S.budgetVsActual.map(p => p.period))].sort();
+  const rows = [['division','period','budget_kes','headcount']];
+  divisions.forEach(div => periods.forEach(period => rows.push([div, period, '', ''])));
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'budget_template.csv'; a.click();
+}
+
+// ── Forecast View ─────────────────────────────────────────────────────────────
+function renderForecastView() {
+  const body = document.getElementById('budget-view-body');
+  if (!body) return;
+  const fc = S.forecast;
+
+  if (!fc || fc.forecast?.length === 0) {
+    body.innerHTML = `<div class="empty">${fc?.message || 'Load at least 2 bills to generate a forecast.'}</div>`;
+    return;
+  }
+
+  const trendDir = fc.slope_kes_per_month >= 0 ? '▲ Increasing' : '▼ Decreasing';
+  const trendColor = fc.slope_kes_per_month >= 0 ? 'var(--coral)' : 'var(--green)';
+
+  body.innerHTML = `
+    <div class="grid3" style="margin-bottom:12px">
+      <div class="kpi">
+        <div class="kpi-label">Trend</div>
+        <div class="kpi-value" style="color:${trendColor}">${trendDir}</div>
+        <div class="kpi-sub">KES ${fmtN(Math.abs(fc.slope_kes_per_month))} / month</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Next Month (est.)</div>
+        <div class="kpi-value">KES ${fc.forecast[0] ? fmtN(fc.forecast[0].predicted_kes) : '–'}</div>
+        <div class="kpi-sub">±KES ${fmtN(fc.std_dev)}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">3-Month Total (est.)</div>
+        <div class="kpi-value">KES ${fmtN(fc.forecast.reduce((s,p) => s + p.predicted_kes, 0))}</div>
+        <div class="kpi-sub">cumulative</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">${secTitle('section.forecast')}</div>
+      <div class="chart-wrap-tall" style="height:300px"><canvas id="forecast-chart"></canvas></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="card-title">Forecast table</div>
+      <table>
+        <thead><tr><th>Period</th><th style="text-align:right">Predicted (KES)</th><th style="text-align:right">Lower bound</th><th style="text-align:right">Upper bound</th><th>Type</th></tr></thead>
+        <tbody>
+          ${fc.history.map(h => `<tr>
+            <td>${escH(h.period)}</td>
+            <td style="text-align:right">${fmtN(h.actual_kes)}</td>
+            <td style="text-align:right;color:var(--fg3)">–</td>
+            <td style="text-align:right;color:var(--fg3)">–</td>
+            <td><span class="badge badge-blue" style="font-size:10px">Actual</span></td>
+          </tr>`).join('')}
+          ${fc.forecast.map(f => `<tr style="background:var(--bg2)">
+            <td><strong>${escH(f.period)}</strong></td>
+            <td style="text-align:right;font-weight:600;color:var(--blue)">${fmtN(f.predicted_kes)}</td>
+            <td style="text-align:right;color:var(--fg3)">${fmtN(f.lower_kes)}</td>
+            <td style="text-align:right;color:var(--fg3)">${fmtN(f.upper_kes)}</td>
+            <td><span class="badge badge-amber" style="font-size:10px">Forecast</span></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  requestAnimationFrame(() => {
+    const ctx = document.getElementById('forecast-chart')?.getContext('2d');
+    if (!ctx) return;
+    const history = fc.history || [];
+    const forecast = fc.forecast || [];
+    const allLabels = [...history.map(h => h.period), ...forecast.map(f => f.period)];
+    const actualData = [...history.map(h => h.actual_kes), ...forecast.map(() => null)];
+    const trendData = [...history.map(h => h.trend_kes), ...forecast.map(f => f.predicted_kes)];
+    const upperData = [...history.map(() => null), ...forecast.map(f => f.upper_kes)];
+    const lowerData = [...history.map(() => null), ...forecast.map(f => f.lower_kes)];
+    S.charts.forecast = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: allLabels,
+        datasets: [
+          { label: 'Actual', data: actualData, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.08)',
+            fill: true, tension: 0.2, pointRadius: 4 },
+          { label: 'Trend / Forecast', data: trendData, borderColor: '#d97706', borderDash: [5,3],
+            fill: false, tension: 0, pointRadius: 3 },
+          { label: 'Upper bound', data: upperData, borderColor: 'rgba(220,38,38,.3)', borderDash: [3,3],
+            fill: false, pointRadius: 0 },
+          { label: 'Lower bound', data: lowerData, borderColor: 'rgba(22,163,74,.3)', borderDash: [3,3],
+            fill: false, pointRadius: 0 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, spanGaps: true,
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10 } },
+          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': KES ' + fmtN(ctx.raw) } } },
+        scales: { y: { ticks: { callback: v => fmtN(v) } } },
+      },
+    });
+  });
+}
+
+// ── Alerts View ───────────────────────────────────────────────────────────────
+function renderAlertsView() {
+  const body = document.getElementById('budget-view-body');
+  if (!body) return;
+  const alerts = S.alerts || [];
+  const breaches = S.alertBreaches || [];
+
+  body.innerHTML = `
+    ${breaches.length ? `
+    <div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:14px 16px;margin-bottom:14px">
+      <strong style="color:#991b1b;font-size:14px">⚠ ${breaches.length} active breach${breaches.length>1?'es':''}</strong>
+      <div class="tbl-wrap" style="margin-top:8px">
+      <table>
+        <thead><tr><th>Name</th><th>Scope</th><th style="text-align:right">Actual</th><th style="text-align:right">Limit</th><th style="text-align:right">Over by</th></tr></thead>
+        <tbody>${breaches.map(b => `<tr>
+          <td style="font-weight:500">${escH(b.name)}</td>
+          <td><span class="badge badge-gray" style="font-size:10px">${escH(b.scope)}</span></td>
+          <td style="text-align:right;color:var(--coral);font-weight:600">KES ${fmtN(b.actual_kes)}</td>
+          <td style="text-align:right">KES ${fmtN(b.threshold_kes)}</td>
+          <td style="text-align:right;color:var(--coral)">+KES ${fmtN(b.overage_kes)} (${b.pct_over}%)</td>
+        </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>` : `<div style="background:#d1fae5;border:1px solid #6ee7b7;border-radius:8px;padding:12px 16px;margin-bottom:14px;color:#065f46;font-size:13px">✓ No active threshold breaches.</div>`}
+
+    <div class="card">
+      <div class="card-title" style="display:flex;justify-content:space-between">
+        <span>${escH(lbl('section.alerts'))} (${alerts.length})</span>
+        <button class="hbtn primary" onclick="openAddAlert()">+ Add alert</button>
+      </div>
+      ${alerts.length ? `
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Scope</th><th>Target</th><th style="text-align:right">Threshold (KES)</th><th></th></tr></thead>
+        <tbody>${alerts.map(a => `<tr>
+          <td><span class="badge badge-blue" style="font-size:10px">${escH(a.scope)}</span></td>
+          <td>${escH(a.scope_value || 'Total bill')}</td>
+          <td style="text-align:right;font-weight:600">${fmtN(a.threshold_kes)}</td>
+          <td><button class="hbtn" style="padding:3px 8px;font-size:11px;color:var(--coral)" onclick="deleteAlert(${a.id})">✕ Remove</button></td>
+        </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>` : `<div class="empty">No alerts configured — click "+ Add alert" to set a spend ceiling.</div>`}
+    </div>`;
+}
+
+function openAddAlert() {
+  const divisions = [...new Set((S.budgetVsActual.flatMap(p => p.divisions.map(d => d.division))))].sort();
+  const modal = document.createElement('div');
+  modal.id = 'add-alert-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--card);border-radius:var(--radius);padding:20px;width:420px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <strong>Add Spend Alert</strong>
+        <button class="drill-close" onclick="document.getElementById('add-alert-modal').remove()">✕</button>
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 120px;font-size:12px">Scope</label>
+        <select id="aa-scope" class="hselect" style="flex:1" onchange="updateAlertScopeUI()">
+          <option value="total">Total bill</option>
+          <option value="division">Division</option>
+          <option value="subscriber">Subscriber</option>
+        </select>
+      </div>
+      <div id="aa-scope-value-row" class="ld-row" style="margin-bottom:10px;display:none">
+        <label style="flex:0 0 120px;font-size:12px" id="aa-scope-label">Value</label>
+        <input id="aa-scope-val" list="aa-scope-list" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" placeholder="">
+        <datalist id="aa-scope-list">${divisions.map(d=>`<option value="${escH(d)}">`).join('')}</datalist>
+      </div>
+      <div class="ld-row" style="margin-bottom:16px">
+        <label style="flex:0 0 120px;font-size:12px">Threshold (KES)</label>
+        <input id="aa-threshold" type="number" min="0" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" placeholder="e.g. 50000">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="hbtn primary" style="flex:1" onclick="saveAlert()">Add alert</button>
+        <button class="hbtn" onclick="document.getElementById('add-alert-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function updateAlertScopeUI() {
+  const scope = document.getElementById('aa-scope').value;
+  const row = document.getElementById('aa-scope-value-row');
+  const lbl2 = document.getElementById('aa-scope-label');
+  row.style.display = scope === 'total' ? 'none' : 'flex';
+  if (lbl2) lbl2.textContent = scope === 'division' ? 'Division' : 'Subscriber number';
+}
+
+async function saveAlert() {
+  const scope = document.getElementById('aa-scope').value;
+  const scopeVal = document.getElementById('aa-scope-val')?.value.trim() || '';
+  const threshold = parseFloat(document.getElementById('aa-threshold').value);
+  if (!threshold) { alert('Please enter a threshold amount.'); return; }
+  if (scope !== 'total' && !scopeVal) { alert('Please enter a value for the scope.'); return; }
+  await fetch(`/api/orgs/${S.activeOrgId}/alerts`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope, scope_value: scopeVal, threshold_kes: threshold }),
+  });
+  document.getElementById('add-alert-modal')?.remove();
+  const [breaches, alerts] = await Promise.all([
+    apiFetch(`/api/orgs/${S.activeOrgId}/alert-breaches`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/alerts`),
+  ]);
+  S.alertBreaches = breaches || [];
+  S.alerts = alerts || [];
+  renderAlertsView();
+}
+
+async function deleteAlert(alertId) {
+  if (!confirm('Remove this alert?')) return;
+  await fetch(`/api/orgs/${S.activeOrgId}/alerts/${alertId}`, { method: 'DELETE' });
+  const [breaches, alerts] = await Promise.all([
+    apiFetch(`/api/orgs/${S.activeOrgId}/alert-breaches`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/alerts`),
+  ]);
+  S.alertBreaches = breaches || [];
+  S.alerts = alerts || [];
+  renderAlertsView();
+}
+
+// ── Cost-per-Head Benchmarks ──────────────────────────────────────────────────
+function renderBenchmarksView() {
+  const body = document.getElementById('budget-view-body');
+  if (!body) return;
+  const latest = S.budgetVsActual[S.budgetVsActual.length - 1];
+  if (!latest) { body.innerHTML = '<div class="empty">No data loaded.</div>'; return; }
+
+  const withHeadcount = latest.divisions.filter(d => d.headcount > 0 && d.cost_per_head != null);
+  const withoutHeadcount = latest.divisions.filter(d => !d.headcount);
+  const maxCPH = Math.max(...withHeadcount.map(d => d.cost_per_head), 1);
+
+  body.innerHTML = `
+    <div class="card">
+      <div class="card-title" style="display:flex;justify-content:space-between">
+        <span>${escH(lbl('section.benchmarks'))} — ${escH(latest.period)}</span>
+        <button class="hbtn" onclick="openBudgetEditor()">✎ Set headcount</button>
+      </div>
+      ${withHeadcount.length ? `
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Division</th><th style="text-align:right">Actual (KES)</th><th style="text-align:right">Headcount</th><th style="text-align:right">Cost / Head (KES)</th><th>Benchmark bar</th></tr></thead>
+        <tbody>${withHeadcount.sort((a,b) => b.cost_per_head - a.cost_per_head).map(d => `<tr class="clickable" onclick="openDrill({by:'division',value:'${escH(d.division)}',title:'${escH(d.division)}'})">
+          <td><strong>${escH(d.division)}</strong></td>
+          <td style="text-align:right">${fmtN(d.actual_kes)}</td>
+          <td style="text-align:right">${d.headcount}</td>
+          <td style="text-align:right;font-weight:600;color:var(--blue)">${fmtN(d.cost_per_head)}</td>
+          <td style="min-width:120px">
+            <div class="top3-bar"><div style="height:4px;border-radius:2px;background:var(--blue);width:${Math.round((d.cost_per_head/maxCPH)*100)}%"></div></div>
+          </td>
+        </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>` : ''}
+      ${withoutHeadcount.length ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--fg3);margin-bottom:6px">Divisions without headcount data (${withoutHeadcount.length})</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${withoutHeadcount.map(d => `<span class="badge badge-gray">${escH(d.division)}</span>`).join('')}
+        </div>
+        <div style="font-size:12px;color:var(--fg3);margin-top:8px">
+          <a href="#" onclick="openBudgetEditor();return false">Add headcount →</a>
+        </div>
+      </div>` : ''}
+    </div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REPORTS & EXPORT TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function renderReporting() {
+  return `
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <button id="rpbtn-builder"     class="hbtn primary" onclick="switchReportView('builder')">Report Builder</button>
+    <button id="rpbtn-excel"       class="hbtn" onclick="switchReportView('excel')">Excel Packs</button>
+    <button id="rpbtn-annotations" class="hbtn" onclick="switchReportView('annotations')">Annotations</button>
+  </div>
+  <div id="report-view-body"><div class="spinner"></div></div>`;
+}
+
+let _reportView = 'builder';
+function switchReportView(view) {
+  _reportView = view;
+  ['builder','excel','annotations'].forEach(v => {
+    const btn = document.getElementById('rpbtn-' + v);
+    if (btn) btn.className = v === view ? 'hbtn primary' : 'hbtn';
+  });
+  if (view === 'builder')     renderReportBuilder();
+  if (view === 'excel')       renderExcelPacks();
+  if (view === 'annotations') renderAnnotationsView();
+}
+
+async function loadReportingData() {
+  if (!S.activeBillId) return;
+  S.annotations = await apiFetch(`/api/bills/${S.activeBillId}/annotations`) || [];
+  renderReportBuilder();
+}
+
+// ── Report Builder ────────────────────────────────────────────────────────────
+function renderReportBuilder() {
+  const body = document.getElementById('report-view-body');
+  if (!body) return;
+  const divisions = (S.divisions || []).map(d => d.division);
+
+  body.innerHTML = `
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">${secTitle('section.report_builder')}</div>
+      <div style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+        Choose what to include and which divisions to cover. The report downloads as a formatted .docx.
+      </div>
+
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;font-weight:600;color:var(--fg2);margin-bottom:8px">Sections to include</div>
+        ${[
+          ['include_summary',    'Executive summary & KPIs'],
+          ['include_tax',        'Tax reconciliation (Excise + VAT)'],
+          ['include_divisions',  'Spend by division'],
+          ['include_subscribers','Top subscribers table'],
+          ['include_anomalies',  'Anomaly register'],
+          ['include_trends',     'Month-on-month trend'],
+          ['include_annotations','Annotations as footnotes'],
+        ].map(([id, label]) => `
+          <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer;font-size:13px">
+            <input type="checkbox" id="rp-${id}" checked style="width:14px;height:14px;accent-color:var(--blue)">
+            ${escH(label)}
+          </label>`).join('')}
+      </div>
+
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;font-weight:600;color:var(--fg2);margin-bottom:8px">
+          Division filter <span style="font-weight:400;color:var(--fg3)">(leave all unchecked = include all)</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px" id="rp-div-filters">
+          ${divisions.map(d => `
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 8px">
+              <input type="checkbox" data-div="${escH(d)}" style="accent-color:var(--blue)">
+              ${escH(d)}
+            </label>`).join('')}
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;font-weight:600;color:var(--fg2);margin-bottom:6px">Top N subscribers</div>
+        <input type="number" id="rp-top-n" value="15" min="5" max="100"
+          style="width:100px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:13px;color:var(--fg)">
+      </div>
+
+      <button class="hbtn primary" onclick="buildAndDownloadReport()" style="width:100%">
+        📄 Generate & Download Report
+      </button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Quick exports</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="hbtn" onclick="downloadReport()" style="text-align:left;padding:10px 14px">
+          <div style="font-weight:500">📄 Standard Executive Report</div>
+          <div style="font-size:11px;color:var(--fg3);margin-top:2px">All sections, all divisions, as .docx</div>
+        </button>
+        <button class="hbtn" onclick="downloadChargebackExcel()" style="text-align:left;padding:10px 14px">
+          <div style="font-weight:500">📊 Chargeback Excel Pack</div>
+          <div style="font-size:11px;color:var(--fg3);margin-top:2px">Multi-sheet workbook, one tab per division</div>
+        </button>
+        <a id="csv-quick-link" class="hbtn" style="display:block;text-align:left;padding:10px 14px" href="#" onclick="window.open(document.getElementById('chargeback-link').href);return false">
+          <div style="font-weight:500">📋 Chargeback CSV</div>
+          <div style="font-size:11px;color:var(--fg3);margin-top:2px">All lines in flat CSV format</div>
+        </a>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function buildAndDownloadReport() {
+  if (!S.activeBillId) return;
+  const sections = ['include_summary','include_tax','include_divisions',
+    'include_subscribers','include_anomalies','include_trends','include_annotations'];
+  const body = { top_n_subscribers: parseInt(document.getElementById('rp-top-n')?.value) || 15 };
+  sections.forEach(id => {
+    const el = document.getElementById('rp-' + id);
+    body[id] = el ? el.checked : true;
+  });
+  const checkedDivs = [...document.querySelectorAll('#rp-div-filters input[type=checkbox]:checked')]
+    .map(el => el.dataset.div).filter(Boolean);
+  if (checkedDivs.length) body.divisions_filter = checkedDivs;
+
+  const btn = document.querySelector('[onclick="buildAndDownloadReport()"]');
+  const orig = btn?.innerHTML;
+  if (btn) { btn.innerHTML = '⏳ Generating…'; btn.disabled = true; }
+
+  try {
+    const resp = await fetch(`/api/bills/${S.activeBillId}/report-custom.docx`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${resp.status}`); }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    a.download = m ? m[1] : `TelecomLens_custom.docx`;
+    a.href = url;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert('Report generation failed:\n' + err.message);
+  } finally {
+    if (btn) { btn.innerHTML = orig; btn.disabled = false; }
+  }
+}
+
+async function downloadChargebackExcel() {
+  if (!S.activeBillId) return;
+  const btn = document.querySelector('[onclick="downloadChargebackExcel()"]');
+  const orig = btn?.innerHTML;
+  if (btn) { btn.innerHTML = '⏳ Building…'; btn.disabled = true; }
+  try {
+    const resp = await fetch(`/api/bills/${S.activeBillId}/chargeback-excel.xlsx`);
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${resp.status}`); }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    a.download = m ? m[1] : `chargeback.xlsx`;
+    a.href = url;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert('Excel export failed:\n' + err.message + '\n\nMake sure openpyxl is installed:\n  pip install openpyxl');
+  } finally {
+    if (btn) { btn.innerHTML = orig; btn.disabled = false; }
+  }
+}
+
+// ── Excel Packs view ──────────────────────────────────────────────────────────
+function renderExcelPacks() {
+  const body = document.getElementById('report-view-body');
+  if (!body) return;
+  const divisions = (S.divisions || []);
+
+  body.innerHTML = `
+  <div class="card">
+    <div class="card-title">${secTitle('section.excel_packs')}</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:12px">
+      The Excel chargeback pack creates one worksheet per division, plus a summary sheet.
+      Each sheet is ready to send to the respective cost-centre owner.
+    </div>
+    <div class="grid3" style="margin-bottom:14px">
+      ${divisions.map(d => `
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+          <div style="font-weight:600;font-size:13px">${escH(d.division)}</div>
+          <div style="font-size:12px;color:var(--fg3);margin-top:2px">${d.count} lines · KES ${fmtN(d.total)}</div>
+        </div>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="hbtn primary" onclick="downloadChargebackExcel()">📊 Download full workbook (.xlsx)</button>
+    </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;color:var(--fg3)">
+        Columns per sheet: Subscriber Number, Name, Division, GL Account, Tariff Plan,
+        Pre-Tax, Excise, VAT, Amount Due, Outstanding, CDR Count, Anomaly flag, Annotations.
+        <br>Anomalous lines are highlighted in red. Even rows have a blue tint for readability.
+        A TOTAL formula row is appended to each sheet.
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Annotations view ──────────────────────────────────────────────────────────
+function renderAnnotationsView() {
+  const body = document.getElementById('report-view-body');
+  if (!body) return;
+  const anns = S.annotations || [];
+
+  body.innerHTML = `
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>${secTitle('section.annotations')} (${anns.length})</span>
+      <button class="hbtn primary" onclick="openAddAnnotation()">+ Add note</button>
+    </div>
+    ${anns.length ? `
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Type</th><th>Reference</th><th>Note</th><th>Author</th><th>Date</th><th></th></tr></thead>
+      <tbody>${anns.map(a => `<tr>
+        <td><span class="badge badge-blue" style="font-size:10px">${escH(a.ref_type)}</span></td>
+        <td style="font-size:12px;color:var(--fg3)">${escH(a.ref_id || '(bill-level)')}</td>
+        <td style="max-width:300px">${escH(a.text)}</td>
+        <td style="font-size:11px;color:var(--fg3)">${escH(a.author)}</td>
+        <td style="font-size:11px;color:var(--fg3)">${escH(a.created_at)}</td>
+        <td><button class="hbtn" style="padding:3px 8px;font-size:11px;color:var(--coral)" onclick="deleteAnnotation(${a.id})">✕</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>` : `<div class="empty">No annotations yet — add notes to flag items for the report.</div>`}
+  </div>`;
+}
+
+function openAddAnnotation() {
+  const modal = document.createElement('div');
+  modal.id = 'ann-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--card);border-radius:var(--radius);padding:20px;width:440px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <strong>Add Annotation</strong>
+        <button class="drill-close" onclick="document.getElementById('ann-modal').remove()">✕</button>
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 110px;font-size:12px">Type</label>
+        <select id="ann-type" class="hselect" style="flex:1">
+          <option value="bill">Bill (general)</option>
+          <option value="line">Subscriber line</option>
+          <option value="division">Division</option>
+          <option value="anomaly">Anomaly</option>
+        </select>
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 110px;font-size:12px">Reference ID<br><span style="color:var(--fg3);font-size:10px">subscriber number, division, etc.</span></label>
+        <input id="ann-ref" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" placeholder="Optional">
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 110px;font-size:12px">Note</label>
+        <textarea id="ann-text" rows="3" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg);resize:vertical" placeholder="Enter your annotation…"></textarea>
+      </div>
+      <div class="ld-row" style="margin-bottom:16px">
+        <label style="flex:0 0 110px;font-size:12px">Author</label>
+        <input id="ann-author" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" placeholder="Your name">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="hbtn primary" style="flex:1" onclick="saveAnnotation()">Save annotation</button>
+        <button class="hbtn" onclick="document.getElementById('ann-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveAnnotation() {
+  const text = document.getElementById('ann-text')?.value.trim();
+  if (!text) { alert('Please enter a note.'); return; }
+  const body = {
+    ref_type: document.getElementById('ann-type')?.value || 'bill',
+    ref_id: document.getElementById('ann-ref')?.value.trim() || '',
+    text,
+    author: document.getElementById('ann-author')?.value.trim() || 'user',
+  };
+  const r = await fetch(`/api/bills/${S.activeBillId}/annotations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  document.getElementById('ann-modal')?.remove();
+  if (r.ok) {
+    S.annotations = await apiFetch(`/api/bills/${S.activeBillId}/annotations`) || [];
+    renderAnnotationsView();
+  }
+}
+
+async function deleteAnnotation(annId) {
+  if (!confirm('Delete this annotation?')) return;
+  await fetch(`/api/bills/${S.activeBillId}/annotations/${annId}`, { method: 'DELETE' });
+  S.annotations = await apiFetch(`/api/bills/${S.activeBillId}/annotations`) || [];
+  renderAnnotationsView();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA & INTEGRATIONS TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function renderIntegrations() {
+  return `
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <button id="intbtn-audit"    class="hbtn primary" onclick="switchIntView('audit')">Audit Trail</button>
+    <button id="intbtn-webhooks" class="hbtn" onclick="switchIntView('webhooks')">Webhooks</button>
+    <button id="intbtn-carriers" class="hbtn" onclick="switchIntView('carriers')">Carrier Detection</button>
+  </div>
+  <div id="int-view-body"><div class="spinner"></div></div>`;
+}
+
+let _intView = 'audit';
+function switchIntView(view) {
+  _intView = view;
+  ['audit','webhooks','carriers'].forEach(v => {
+    const btn = document.getElementById('intbtn-' + v);
+    if (btn) btn.className = v === view ? 'hbtn primary' : 'hbtn';
+  });
+  if (view === 'audit')    renderAuditLog();
+  if (view === 'webhooks') renderWebhooksView();
+  if (view === 'carriers') renderCarriersView();
+}
+
+async function loadIntegrationsData() {
+  if (!S.activeOrgId) return;
+  const [audit, webhooks, carriers] = await Promise.all([
+    apiFetch(`/api/orgs/${S.activeOrgId}/audit-log?limit=50`),
+    apiFetch(`/api/orgs/${S.activeOrgId}/webhooks`),
+    apiFetch(`/api/health/carriers`),
+  ]);
+  S.auditLog = audit || [];
+  S.webhooks = webhooks || [];
+  S.carriers = carriers || [];
+  renderAuditLog();
+}
+
+// ── Audit Trail ───────────────────────────────────────────────────────────────
+function renderAuditLog() {
+  const body = document.getElementById('int-view-body');
+  if (!body) return;
+  const log = S.auditLog || [];
+  const ACTION_ICONS = {
+    'bill.import': '📥', 'report.export': '📄', 'report.excel': '📊',
+    'annotation.add': '💬', 'annotation.delete': '🗑',
+    'webhook.add': '🔗', 'webhook.delete': '🗑',
+    'subscriber.update': '✏️', 'budget.set': '💰',
+  };
+  body.innerHTML = `
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>${secTitle('section.audit_log')} (${log.length} recent)</span>
+      <button class="hbtn" onclick="loadMoreAudit()">Load more</button>
+    </div>
+    ${log.length ? `
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Action</th><th>Detail</th><th>Actor</th><th>Timestamp</th></tr></thead>
+      <tbody>${log.map(e => {
+        const icon = ACTION_ICONS[e.action] || '📋';
+        const [cat, sub] = e.action.split('.');
+        const badgeClass = cat === 'bill' ? 'badge-blue' : cat === 'report' ? 'badge-green' :
+                           cat === 'annotation' ? 'badge-amber' : 'badge-gray';
+        return `<tr>
+          <td>
+            <span class="badge ${badgeClass}" style="font-size:10px">${icon} ${escH(e.action)}</span>
+          </td>
+          <td style="font-size:12px;color:var(--fg2);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escH(e.detail)}</td>
+          <td style="font-size:12px;color:var(--fg3)">${escH(e.actor)}</td>
+          <td style="font-size:12px;color:var(--fg3);white-space:nowrap">${escH(e.created_at)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>` : `<div class="empty">No audit events yet. Actions like bill imports, report exports, and subscriber updates will appear here.</div>`}
+  </div>`;
+}
+
+async function loadMoreAudit() {
+  if (!S.activeOrgId) return;
+  const more = await apiFetch(`/api/orgs/${S.activeOrgId}/audit-log?limit=200`);
+  if (more) { S.auditLog = more; renderAuditLog(); }
+}
+
+// ── Webhooks view ─────────────────────────────────────────────────────────────
+function renderWebhooksView() {
+  const body = document.getElementById('int-view-body');
+  if (!body) return;
+  const hooks = S.webhooks || [];
+
+  body.innerHTML = `
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>${secTitle('section.webhooks')} (${hooks.length})</span>
+      <button class="hbtn primary" onclick="openAddWebhook()">+ Add webhook</button>
+    </div>
+    <div style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+      After each successful bill import, TelecomLens POSTs a JSON payload to configured URLs.
+      Optionally set a secret to receive an HMAC-SHA256 signature in <code>X-TelecomLens-Signature</code>.
+    </div>
+    ${hooks.length ? `
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>URL</th><th>Events</th><th>Last Fired</th><th>Status</th><th></th></tr></thead>
+      <tbody>${hooks.map(h => `<tr>
+        <td style="font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escH(h.url)}</td>
+        <td><span class="badge badge-blue" style="font-size:10px">${escH(h.events)}</span></td>
+        <td style="font-size:12px;color:var(--fg3)">${escH(h.last_fired || '—')}</td>
+        <td><span class="badge ${h.is_active ? 'badge-green' : 'badge-gray'}" style="font-size:10px">${h.is_active ? 'Active' : 'Paused'}</span></td>
+        <td style="display:flex;gap:4px;flex-wrap:nowrap">
+          <button class="hbtn" style="padding:3px 8px;font-size:11px" onclick="testWebhook(${h.id})">Test</button>
+          <button class="hbtn" style="padding:3px 8px;font-size:11px;color:var(--coral)" onclick="deleteWebhook(${h.id})">✕</button>
+        </td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>` : `<div class="empty">No webhooks configured. Add one to push bill data to Slack, Power BI, or your ERP after each import.</div>`}
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:600;color:var(--fg2);margin-bottom:6px">Payload example</div>
+      <pre style="background:var(--bg2);border-radius:6px;padding:10px;font-size:11px;color:var(--fg2);overflow-x:auto">{
+  "event": "bill.imported",
+  "org_id": "acc001",
+  "bill_id": 12,
+  "statement_date": "2026-03",
+  "account_total": 125000.00,
+  "subscriber_count": 45
+}</pre>
+    </div>
+  </div>`;
+}
+
+function openAddWebhook() {
+  const modal = document.createElement('div');
+  modal.id = 'wh-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--card);border-radius:var(--radius);padding:20px;width:460px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <strong>Add Webhook</strong>
+        <button class="drill-close" onclick="document.getElementById('wh-modal').remove()">✕</button>
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 110px;font-size:12px">URL</label>
+        <input id="wh-url" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" placeholder="https://hooks.example.com/…">
+      </div>
+      <div class="ld-row" style="margin-bottom:10px">
+        <label style="flex:0 0 110px;font-size:12px">Secret <span style="color:var(--fg3)">(optional)</span></label>
+        <input id="wh-secret" type="password" style="flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;color:var(--fg)" placeholder="Leave blank if not needed">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="hbtn primary" style="flex:1" onclick="saveWebhook()">Add webhook</button>
+        <button class="hbtn" onclick="document.getElementById('wh-modal').remove()">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveWebhook() {
+  const url = document.getElementById('wh-url')?.value.trim();
+  const secret = document.getElementById('wh-secret')?.value.trim();
+  if (!url || !url.startsWith('http')) { alert('Please enter a valid URL.'); return; }
+  await fetch(`/api/orgs/${S.activeOrgId}/webhooks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, secret, events: 'bill.imported' }),
+  });
+  document.getElementById('wh-modal')?.remove();
+  S.webhooks = await apiFetch(`/api/orgs/${S.activeOrgId}/webhooks`) || [];
+  renderWebhooksView();
+}
+
+async function deleteWebhook(whId) {
+  if (!confirm('Remove this webhook?')) return;
+  await fetch(`/api/orgs/${S.activeOrgId}/webhooks/${whId}`, { method: 'DELETE' });
+  S.webhooks = await apiFetch(`/api/orgs/${S.activeOrgId}/webhooks`) || [];
+  renderWebhooksView();
+}
+
+async function testWebhook(whId) {
+  const btn = event.target;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '⏳'; btn.disabled = true;
+  const r = await fetch(`/api/orgs/${S.activeOrgId}/webhooks/${whId}/test`, { method: 'POST' });
+  const data = await r.json().catch(() => ({}));
+  btn.innerHTML = orig; btn.disabled = false;
+  if (r.ok && data.ok) {
+    alert(`Test successful — server returned HTTP ${data.status}`);
+  } else {
+    alert(`Test failed:\n${data.detail || JSON.stringify(data)}`);
+  }
+}
+
+// ── Carrier Detection ─────────────────────────────────────────────────────────
+function renderCarriersView() {
+  const body = document.getElementById('int-view-body');
+  if (!body) return;
+  const carriers = S.carriers || [];
+  const CARRIER_INFO = {
+    'Safaricom':    { color: '#16a34a', note: 'Postpay bill parser: full support' },
+    'Airtel Kenya': { color: '#dc2626', note: 'Parser: basic support — beta' },
+    'Telkom Kenya': { color: '#2563eb', note: 'Parser: basic support — beta' },
+    'Faiba / JTL':  { color: '#7c3aed', note: 'Parser: experimental' },
+    'Unknown':      { color: '#6b7280', note: 'Parser cannot identify carrier from bill header' },
+  };
+
+  body.innerHTML = `
+  <div class="card">
+    <div class="card-title">${secTitle('section.carriers')}</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:12px">
+      TelecomLens auto-detects the carrier from each imported bill's account prefix and header text.
+    </div>
+    ${carriers.length ? `
+    <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Organisation</th><th>Account ID</th><th>Detected Carrier</th><th>Parser support</th></tr></thead>
+      <tbody>${carriers.map(c => {
+        const info = CARRIER_INFO[c.carrier] || CARRIER_INFO['Unknown'];
+        return `<tr>
+          <td style="font-weight:500">${escH(c.org_name)}</td>
+          <td style="color:var(--fg3);font-size:12px">${escH(c.org_id)}</td>
+          <td><span style="display:inline-flex;align-items:center;gap:6px">
+            <span style="width:8px;height:8px;border-radius:50%;background:${info.color};display:inline-block"></span>
+            <strong>${escH(c.carrier)}</strong>
+          </span></td>
+          <td style="font-size:12px;color:var(--fg3)">${escH(info.note)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>` : `<div class="empty">Import a bill to detect carriers.</div>`}
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:600;color:var(--fg2);margin-bottom:6px">Multi-carrier support</div>
+      <div style="font-size:12px;color:var(--fg3)">
+        Bills from different carriers can coexist in the same dashboard — each gets its own org record.
+        The parser auto-detects Safaricom (full), Airtel Kenya (beta), and Telkom Kenya (beta) bill formats.
+        To add a new carrier pattern, edit <code>parser.py</code> → <code>DIVISION_RULES</code> and the <code>_detect_carrier_from_org</code> helper in <code>main.py</code>.
+      </div>
+    </div>
+  </div>`;
+}
+
+// ─── REPORT DOWNLOAD ──────────────────────────────────────────────────────────
+async function downloadReport() {
+  const btn = document.getElementById('report-btn');
+  const billId = btn.dataset.billId || S.activeBillId;
+  if (!billId) return;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '⏳ Generating…';
+  btn.disabled = true;
+  try {
+    const resp = await fetch(`/api/bills/${billId}/report.docx`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    // Get filename from Content-Disposition header if available
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    a.download = match ? match[1] : `TelecomLens_report_${billId}.docx`;
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert('Report generation failed:\n' + err.message + '\n\nMake sure python-docx is installed:\n  pip install python-docx');
+  } finally {
+    btn.innerHTML = orig;
+    btn.disabled = false;
+  }
+}
+
+// ─── BOOT ─────────────────────────────────────────────────────────────────────
+(async function boot() {
+  renderTabs();
+  document.getElementById('main-content').innerHTML = '<div class="spinner"></div>';
+  await loadOrgs();
+  await loadBills(S.activeOrgId);
+  if (S.activeBillId) await loadBillData(S.activeBillId);
+  renderTab(S.activeTab);
+  requestAnimationFrame(() => initTabCharts(S.activeTab));
+})();
+</script>
+</body>
+</html>
