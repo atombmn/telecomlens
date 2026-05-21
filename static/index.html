@@ -149,6 +149,7 @@ tr.clickable:hover td:first-child::after{content:" ↗";color:var(--blue);font-s
   <select class="hselect" id="bill-select" onchange="onBillChange(this.value)"><option value="">Select bill…</option></select>
   <span class="header-sep"></span>
   <button class="hbtn" onclick="openImport()">⊕ Import PDF</button>
+  <button class="hbtn" onclick="reclassifyBill()" title="Re-run smart classification on current bill">🔄 Reclassify</button>
   <button class="hbtn" onclick="openLabelDrawer()" title="Customise labels">✎ Customise</button>
   <button id="report-btn" class="hbtn primary" style="display:none" onclick="downloadReport()" title="Download executive .docx report">&#x1F4C4; Report</button>
   <a id="chargeback-link" class="hbtn" style="display:none" href="#" target="_blank">⬇ Chargeback CSV</a>
@@ -2438,6 +2439,34 @@ async function downloadReport() {
   } finally {
     btn.innerHTML = orig;
     btn.disabled = false;
+  }
+}
+
+// ─── RECLASSIFY ─────────────────────────────────────────────────────────────
+async function reclassifyBill() {
+  if (!S.activeBillId) { alert('No bill selected.'); return; }
+  const btn = document.querySelector('[onclick="reclassifyBill()"]');
+  const orig = btn?.innerHTML;
+  if (btn) { btn.innerHTML = '⏳ Reclassifying…'; btn.disabled = true; }
+  try {
+    const r = await fetch(`/api/bills/${S.activeBillId}/reclassify`, { method: 'POST' });
+    const data = await r.json();
+    if (r.ok) {
+      alert(`Reclassification complete: ${data.changed} of ${data.total_lines} lines updated.`);
+      await loadBillData(S.activeBillId);
+      renderTab(S.activeTab);
+      requestAnimationFrame(() => {
+        if (S.activeTab === 'executive' || S.activeTab === 'finance') {
+          try { initTabCharts(S.activeTab); } catch(_e) {}
+        }
+      });
+    } else {
+      alert('Reclassification failed: ' + (data.detail || 'Unknown error'));
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    if (btn) { btn.innerHTML = orig; btn.disabled = false; }
   }
 }
 
