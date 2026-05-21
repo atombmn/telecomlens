@@ -25,7 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from pydantic_settings import BaseSettings
 
-from parser import parse_bill
+from parser import parse_bill, classify_line
 from discover import detect_org_tokens, classify_name, discover_patterns
 # NOTE: report is imported lazily inside the endpoint so a missing python-docx
 # does not crash the whole app at startup.
@@ -251,7 +251,7 @@ def detect_anomalies(inv: dict) -> tuple[bool, str]:
         reasons.append("high spend >50K")
     if inv.get("cdr_count", 0) > 1000:
         reasons.append("high CDR count")
-    if inv.get("division") == "Unclassified":
+    if inv.get("division", "").startswith("Other") or inv.get("division") == "Unclassified":
         reasons.append("unclassified line")
     return bool(reasons), "; ".join(reasons)
 
@@ -283,7 +283,13 @@ def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpl
             subscriber_number=inv["subscriber_number"],
             raw_name=inv["raw_name"],
             tariff_plan=inv["tariff_plan"],
-            division=classify_name(inv["raw_name"], rules) if rules else inv["division"],
+            division=classify_line(
+                raw_name=inv["raw_name"],
+                tariff_plan=inv.get("tariff_plan", ""),
+                cdrs=inv.get("cdr_records"),
+                amount_due=inv.get("amount_due_kes", 0),
+                user_rules=rules or None,
+            ),
             geography=inv["geography"],
             pre_tax=inv["pre_tax"], excise=inv["excise"],
             vat=inv["vat"], amount_due_kes=inv["amount_due_kes"],
@@ -538,7 +544,10 @@ def bill_drilldown(bill_id: int,
     elif by == "geography":
         q = q.filter_by(geography=value)
     elif by == "unclassified":
-        q = q.filter_by(division="Unclassified")
+        q = q.filter(
+            (InvoiceLine.division == "Unclassified")
+            | (InvoiceLine.division.ilike("Other%"))
+        )
 
     rows = q.order_by(InvoiceLine.amount_due_kes.desc()).limit(200).all()
     total_amount = sum(r.amount_due_kes for r in rows)
@@ -761,6 +770,72 @@ def download_report(bill_id: int, db: Session = Depends(get_db)):
 
 
 
+
+
+@app.post("/api/bills/{bill_id}/reclassify")
+def reclassify_bill(bill_id: int, db: Session = Depends(get_db)):
+    """
+    Re-run multi-signal classification on all lines in a bill.
+    Useful after upgrading the parser or adding user rules.
+    Does NOT overwrite lines that have a subscriber profile with division_override set.
+    """
+    bill = db.query(BillUpload).filter_by(id=bill_id).first()
+    if not bill:
+        raise HTTPException(404, "Bill not found")
+
+    rules = get_org_rules(bill.org_id, db)
+    lines = db.query(InvoiceLine).filter_by(bill_id=bill_id).all()
+
+    # Build CDR map for service-mix classification
+    cdr_map: dict[str, list[dict]] = {}
+    cdrs = db.query(CDRRecord).filter_by(bill_id=bill_id).all()
+    for c in cdrs:
+        cdr_map.setdefault(c.subscriber_number, []).append({
+            "service_type": c.service_type, "charge": c.charge,
+        })
+
+    # Build override map from subscriber profiles
+    overrides: dict[str, str] = {}
+    profiles = db.query(SubscriberProfile).filter_by(org_id=bill.org_id).all()
+    for p in profiles:
+        if p.division_override:
+            overrides[p.subscriber_number] = p.division_override
+
+    changed = 0
+    for line in lines:
+        # Skip lines with a manual division override
+        if line.subscriber_number in overrides:
+            if line.division != overrides[line.subscriber_number]:
+                line.division = overrides[line.subscriber_number]
+                changed += 1
+            continue
+
+        new_div = classify_line(
+            raw_name=line.raw_name or "",
+            tariff_plan=line.tariff_plan or "",
+            cdrs=cdr_map.get(line.subscriber_number),
+            amount_due=line.amount_due_kes or 0,
+            user_rules=rules or None,
+        )
+        if new_div != line.division:
+            line.division = new_div
+            changed += 1
+
+        # Also update anomaly flag
+        is_anom, reason = detect_anomalies({
+            "amount_due_kes": line.amount_due_kes,
+            "cdr_count": line.cdr_count,
+            "division": new_div,
+        })
+        line.is_anomaly = is_anom
+        line.anomaly_reason = reason
+
+    db.commit()
+    logger.info("Reclassified bill %d: %d/%d lines changed", bill_id, changed, len(lines))
+    db.add(AuditLog(org_id=bill.org_id, action="bill.reclassify",
+                    detail=f"bill={bill_id}, {changed}/{len(lines)} changed"))
+    db.commit()
+    return {"bill_id": bill_id, "total_lines": len(lines), "changed": changed}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # REPORTING & EXPORT ENDPOINTS
