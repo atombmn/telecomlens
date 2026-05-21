@@ -82,6 +82,10 @@ class BillUpload(Base):
     sha256 = Column(String, unique=True)
     statement_date = Column(String)
     account_total = Column(Float, default=0)
+    outstanding_total = Column(Float, default=0)
+    total_net = Column(Float, default=0)
+    total_vat = Column(Float, default=0)
+    total_excise = Column(Float, default=0)
     subscriber_count = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
@@ -268,6 +272,10 @@ def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpl
         org_id=org_id, filename=filename, sha256=sha,
         statement_date=bill_data["statement_date"],
         account_total=bill_data["account_total"],
+        outstanding_total=bill_data.get("outstanding", 0),
+        total_net=bill_data.get("total_net", 0),
+        total_vat=bill_data.get("total_vat", 0),
+        total_excise=bill_data.get("total_excise", 0),
         subscriber_count=len(bill_data["invoices"]),
     )
     db.add(bill)
@@ -397,6 +405,7 @@ def list_bills(org_id: Optional[str] = None, db: Session = Depends(get_db)):
     bills = q.order_by(BillUpload.statement_date.desc()).all()
     return [{"id": b.id, "org_id": b.org_id, "filename": b.filename,
              "statement_date": b.statement_date, "account_total": b.account_total,
+             "outstanding_total": getattr(b, "outstanding_total", 0) or 0,
              "subscriber_count": b.subscriber_count,
              "uploaded_at": b.uploaded_at.isoformat() if b.uploaded_at else ""} for b in bills]
 
@@ -408,11 +417,23 @@ async def upload_bill(file: UploadFile = File(...), db: Session = Depends(get_db
     existing = db.query(BillUpload).filter_by(sha256=sha).first()
     if existing:
         return {"status": "duplicate", "bill_id": existing.id}
+    logger.info("Extracting text from PDF (%d bytes)…", len(data))
     text = pdf_to_text(data)
+    logger.info("Parsing %d chars of bill text…", len(text))
     bill_data = parse_bill(text)
+    logger.info("Storing %d invoices…", len(bill_data["invoices"]))
     bill = store_bill(bill_data, file.filename or "upload.pdf", sha, db)
-    return {"status": "ok", "bill_id": bill.id, "org_id": bill.org_id,
-            "subscriber_count": bill.subscriber_count}
+    logger.info("Import complete: bill_id=%d, org=%s, subscribers=%d",
+                bill.id, bill.org_id, bill.subscriber_count)
+    return {
+        "status": "ok",
+        "bill_id": bill.id,
+        "org_id": bill.org_id,
+        "subscriber_count": bill.subscriber_count,
+        "account_total": bill_data["account_total"],
+        "statement_date": bill_data["statement_date"],
+        "org_name": bill_data["org_name"],
+    }
 
 
 @app.post("/api/bills/import-folder")
@@ -444,11 +465,13 @@ def bill_summary(bill_id: int, db: Session = Depends(get_db)):
     if not bill:
         raise HTTPException(404, "Bill not found")
     lines = db.query(InvoiceLine).filter_by(bill_id=bill_id).all()
-    total = sum(l.amount_due_kes for l in lines)
-    pre_tax = sum(l.pre_tax for l in lines)
-    excise = sum(l.excise for l in lines)
-    vat = sum(l.vat for l in lines)
-    outstanding = sum(l.outstanding for l in lines)
+    # Use bill-level totals (parsed directly from TAX ANALYSIS section = exact)
+    # Fall back to summing lines if bill-level fields not populated (older imports)
+    total       = bill.account_total if bill.account_total else sum(l.amount_due_kes for l in lines)
+    pre_tax     = bill.total_net     if bill.total_net     else sum(l.pre_tax for l in lines)
+    excise      = bill.total_excise  if bill.total_excise  else sum(l.excise for l in lines)
+    vat         = bill.total_vat     if bill.total_vat     else sum(l.vat for l in lines)
+    outstanding = bill.outstanding_total if bill.outstanding_total else sum(l.outstanding for l in lines)
     anomaly_count = sum(1 for l in lines if l.is_anomaly)
     divisions = {}
     for l in lines:
@@ -1231,6 +1254,13 @@ def _detect_carrier_from_org(org) -> str:
         return "Faiba / JTL"
     return "Unknown"
 
+
+
+
+@app.get("/api/health/status")
+def server_status():
+    """Quick ping to verify server is alive (used by UI progress tracking)."""
+    return {"ok": True, "ts": datetime.utcnow().isoformat()}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SUBSCRIBER MANAGEMENT ENDPOINTS
