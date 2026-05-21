@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TelecomLens</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc3UJWW1h3QFkAhIXRIMQYcMqiTPSBXlCFkCVYtNHCVnqfFx+RFDhR7VgFZMjGqniGng==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc7UAxWMUMNMWzWxF4SQo9CgkJIN1kx6djDQZjh3Y8SZ1d+6I+1zze6Z7kHXO7q3UyZAWw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
 :root {
   --bg:#f8f9fa;--bg2:#f1f3f5;--bg3:#e9ecef;--fg:#1a1a2e;--fg2:#495057;--fg3:#868e96;
@@ -355,7 +355,7 @@ async function openDrill(params) {
     document.getElementById('drill-spark-wrap').style.display = '';
     const ctx = document.getElementById('drill-spark-chart').getContext('2d');
     if (drillSparkInst) drillSparkInst.destroy();
-    drillSparkInst = new Chart(ctx, {
+    try { drillSparkInst = new Chart(ctx, {
       type: 'line',
       data: {
         labels: data.history.map(h => h.date),
@@ -367,7 +367,7 @@ async function openDrill(params) {
         tooltip: { callbacks: { label: ctx => 'KES ' + fmtN(ctx.raw) } } },
         scales: { x: { ticks: { font: { size: 10 }, maxRotation: 0 } },
                   y: { ticks: { font: { size: 10 }, callback: v => fmtN(v) } } } },
-    });
+    }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
   }
 
   // Top 3 contributors
@@ -779,7 +779,7 @@ function renderTrendsCharts() {
   // Total spend chart - bars are clickable
   const ctx1 = document.getElementById('trend-total-chart')?.getContext('2d');
   if (ctx1) {
-    S.charts.trendTotal = new Chart(ctx1, {
+    try { S.charts.trendTotal = new Chart(ctx1, {
       type: 'bar',
       data: {
         labels: t.map(b => b.statement_date),
@@ -796,7 +796,7 @@ function renderTrendsCharts() {
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => 'KES ' + fmtN(ctx.raw) } } },
         scales: { y: { ticks: { callback: v => fmtN(v) } } },
       },
-    });
+    }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
   }
 
   // Division trend (stacked)
@@ -804,7 +804,7 @@ function renderTrendsCharts() {
   const COLOURS = ['#2563eb','#0d9488','#d97706','#dc2626','#7c3aed','#16a34a','#f59e0b','#6366f1'];
   const ctx2 = document.getElementById('trend-div-chart')?.getContext('2d');
   if (ctx2) {
-    S.charts.trendDiv = new Chart(ctx2, {
+    try { S.charts.trendDiv = new Chart(ctx2, {
       type: 'bar',
       data: {
         labels: t.map(b => b.statement_date),
@@ -826,13 +826,13 @@ function renderTrendsCharts() {
                    tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': KES ' + fmtN(ctx.raw) } } },
         scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => fmtN(v) } } },
       },
-    });
+    }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
   }
 
   // Subscribers + anomalies
   const ctx3 = document.getElementById('trend-subs-chart')?.getContext('2d');
   if (ctx3) {
-    S.charts.trendSubs = new Chart(ctx3, {
+    try { S.charts.trendSubs = new Chart(ctx3, {
       type: 'line',
       data: {
         labels: t.map(b => b.statement_date),
@@ -848,7 +848,7 @@ function renderTrendsCharts() {
         plugins: { legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10 } } },
         scales: { y: { position: 'left' }, y1: { position: 'right', grid: { drawOnChartArea: false } } },
       },
-    });
+    }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
   }
 
   // Top spenders table
@@ -880,7 +880,7 @@ function initTabCharts(tab) {
     const divCtx = document.getElementById('exec-div-chart')?.getContext('2d');
     const COLOURS = ['#2563eb','#0d9488','#d97706','#dc2626','#7c3aed','#16a34a','#f59e0b','#6366f1'];
     if (divCtx && S.divisions.length) {
-      S.charts.execDiv = new Chart(divCtx, {
+      try { S.charts.execDiv = new Chart(divCtx, {
         type: 'doughnut',
         data: { labels: S.divisions.map(d => d.division),
                 datasets: [{ data: S.divisions.map(d => d.total),
@@ -895,12 +895,12 @@ function initTabCharts(tab) {
           plugins: { legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10, padding: 8 } },
                      tooltip: { callbacks: { label: ctx => ctx.label + ': KES ' + fmtN(ctx.raw) } } },
         },
-      });
+      }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
     }
     const chargeCtx = document.getElementById('exec-charge-chart')?.getContext('2d');
     if (chargeCtx && S.summary) {
       const s = S.summary;
-      S.charts.execCharge = new Chart(chargeCtx, {
+      try { S.charts.execCharge = new Chart(chargeCtx, {
         type: 'bar',
         data: {
           labels: ['Pre-Tax', 'Excise (15%)', 'VAT (16%)', 'Outstanding'],
@@ -918,7 +918,7 @@ function initTabCharts(tab) {
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => 'KES ' + fmtN(ctx.raw) } } },
           scales: { x: { ticks: { callback: v => fmtN(v) } } },
         },
-      });
+      }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
     }
   }
 }
@@ -1487,7 +1487,7 @@ function renderBVATrendChart() {
   if (!ctx || !S.budgetVsActual.length) return;
   const data = S.budgetVsActual;
   const hasBudget = data.some(d => d.total_budget > 0);
-  S.charts.bvaTrend = new Chart(ctx, {
+  try { S.charts.bvaTrend = new Chart(ctx, {
     type: 'bar',
     data: {
       labels: data.map(d => d.period),
@@ -1509,7 +1509,7 @@ function renderBVATrendChart() {
       },
       scales: { y: { ticks: { callback: v => fmtN(v) } } },
     },
-  });
+  }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
 }
 
 // ── Budget Editor ─────────────────────────────────────────────────────────────
@@ -1670,7 +1670,7 @@ function renderForecastView() {
     const trendData = [...history.map(h => h.trend_kes), ...forecast.map(f => f.predicted_kes)];
     const upperData = [...history.map(() => null), ...forecast.map(f => f.upper_kes)];
     const lowerData = [...history.map(() => null), ...forecast.map(f => f.lower_kes)];
-    S.charts.forecast = new Chart(ctx, {
+    try { S.charts.forecast = new Chart(ctx, {
       type: 'line',
       data: {
         labels: allLabels,
@@ -1691,7 +1691,7 @@ function renderForecastView() {
           tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': KES ' + fmtN(ctx.raw) } } },
         scales: { y: { ticks: { callback: v => fmtN(v) } } },
       },
-    });
+    }); } catch(_e) { console.warn('Chart unavailable:', _e.message); }
   });
 }
 
