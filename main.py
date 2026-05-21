@@ -195,6 +195,40 @@ class WebhookConfig(Base):
     is_active  = Column(Boolean, default=True)
     last_fired = Column(DateTime, nullable=True)
 
+
+class Division(Base):
+    """
+    Org-specific division registry.  Stores the canonical list of division names
+    the user has defined.  New names created during bulk-retag are auto-added here.
+    """
+    __tablename__ = "divisions"
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    org_id     = Column(String, index=True)
+    name       = Column(String)                     # display name
+    colour     = Column(String, default="")         # optional hex for charts
+    description= Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class ChangeLog(Base):
+    """
+    Detailed, reversible change record.
+    Every division retag or subscriber update writes a row here.
+    The rollback endpoint reads prev_value to restore.
+    """
+    __tablename__ = "change_log"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    org_id        = Column(String, index=True)
+    entity_type   = Column(String)          # "invoice_line" | "subscriber_profile"
+    entity_id     = Column(String)          # subscriber_number (stable across bills)
+    field         = Column(String)          # "division" | "display_name" | "tags" etc.
+    prev_value    = Column(Text, default="")
+    new_value     = Column(Text, default="")
+    actor         = Column(String, default="user")
+    note          = Column(String, default="")
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    rolled_back   = Column(Boolean, default=False)
+    rolled_back_at= Column(DateTime, nullable=True)
+
 Base.metadata.create_all(engine)
 
 
@@ -245,6 +279,42 @@ def pdf_to_text(pdf_bytes: bytes) -> str:
 def get_org_rules(org_id: str, db: Session) -> list[tuple[str, str]]:
     rows = db.query(MappingRule).filter_by(org_id=org_id).order_by(MappingRule.priority.desc()).all()
     return [(r.pattern, r.division) for r in rows]
+
+
+def ensure_division(org_id: str, name: str, db: Session) -> None:
+    """Create a division registry entry if it does not already exist."""
+    if not name or not name.strip():
+        return
+    exists = db.query(Division).filter_by(org_id=org_id, name=name.strip()).first()
+    if not exists:
+        db.add(Division(org_id=org_id, name=name.strip()))
+        db.flush()
+
+
+def _log_change(
+    org_id: str,
+    entity_type: str,
+    entity_id: str,
+    field: str,
+    prev_value: str,
+    new_value: str,
+    actor: str = "user",
+    note: str = "",
+    db: Session = None,
+) -> "ChangeLog":
+    """Write one ChangeLog row and return it."""
+    entry = ChangeLog(
+        org_id=org_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        field=field,
+        prev_value=str(prev_value) if prev_value is not None else "",
+        new_value=str(new_value) if new_value is not None else "",
+        actor=actor,
+        note=note,
+    )
+    db.add(entry)
+    return entry
 
 
 def detect_anomalies(inv: dict) -> tuple[bool, str]:
@@ -1337,10 +1407,21 @@ def update_subscriber_profile(
         db.add(profile)
     ALLOWED = {"display_name", "division_override", "tags", "device_type",
                "notes", "tariff_override", "is_active"}
+    actor = body.pop("actor", "user")
+    note  = body.pop("note", "")
     for k, v in body.items():
         if k in ALLOWED:
+            prev = getattr(profile, k, "")
+            if str(prev) != str(v):
+                _log_change(org_id, "subscriber_profile", sub_number,
+                            k, prev, v, actor=actor, note=note, db=db)
             setattr(profile, k, v)
+    # If division_override changed, ensure it exists in the division registry
+    if "division_override" in body and body["division_override"]:
+        ensure_division(org_id, body["division_override"], db)
     profile.updated_at = datetime.utcnow()
+    db.add(AuditLog(org_id=org_id, action="subscriber.update",
+                    detail=f"sub={sub_number} fields={list(body.keys())}"))
     db.commit()
     return {"ok": True}
 
@@ -1768,6 +1849,378 @@ def alert_breaches(org_id: str, db: Session = Depends(get_db)):
             })
     return breaches
 
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIVISION MANAGER ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/orgs/{org_id}/divisions")
+def list_divisions(org_id: str, db: Session = Depends(get_db)):
+    """Return the org's registered divisions, augmented with live spend from latest bill."""
+    divs = db.query(Division).filter_by(org_id=org_id).order_by(Division.name).all()
+    # Also surface divisions from InvoiceLines that may not yet be in registry
+    line_divs = (
+        db.query(InvoiceLine.division)
+        .filter_by(org_id=org_id)
+        .distinct()
+        .all()
+    )
+    registered = {d.name for d in divs}
+    for (ld,) in line_divs:
+        if ld and ld not in registered:
+            db.add(Division(org_id=org_id, name=ld))
+            registered.add(ld)
+    db.commit()
+    result = db.query(Division).filter_by(org_id=org_id).order_by(Division.name).all()
+    return [
+        {"id": d.id, "name": d.name, "colour": d.colour, "description": d.description}
+        for d in result
+    ]
+
+
+@app.post("/api/orgs/{org_id}/divisions")
+def create_division(org_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    """Create a new division name for this org."""
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    existing = db.query(Division).filter_by(org_id=org_id, name=name).first()
+    if existing:
+        return {"id": existing.id, "status": "exists"}
+    div = Division(
+        org_id=org_id, name=name,
+        colour=body.get("colour", ""),
+        description=body.get("description", ""),
+    )
+    db.add(div)
+    db.commit()
+    db.add(AuditLog(org_id=org_id, action="division.create", detail=f"name={name}"))
+    db.commit()
+    return {"id": div.id, "status": "created"}
+
+
+@app.patch("/api/orgs/{org_id}/divisions/{div_id}")
+def update_division(org_id: str, div_id: int, body: dict = Body(...),
+                    db: Session = Depends(get_db)):
+    """Rename a division and/or update colour / description."""
+    div = db.query(Division).filter_by(id=div_id, org_id=org_id).first()
+    if not div:
+        raise HTTPException(404, "Division not found")
+    old_name = div.name
+    for k in ("name", "colour", "description"):
+        if k in body:
+            setattr(div, k, body[k])
+    # If renamed, cascade to all InvoiceLines and SubscriberProfiles
+    if "name" in body and body["name"] != old_name:
+        new_name = body["name"].strip()
+        if not new_name:
+            raise HTTPException(400, "name cannot be empty")
+        db.query(InvoiceLine).filter_by(org_id=org_id, division=old_name).update(
+            {"division": new_name}
+        )
+        db.query(SubscriberProfile).filter_by(
+            org_id=org_id, division_override=old_name
+        ).update({"division_override": new_name})
+        db.add(AuditLog(org_id=org_id, action="division.rename",
+                        detail=f"{old_name!r} → {new_name!r}"))
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/orgs/{org_id}/divisions/{div_id}")
+def delete_division(org_id: str, div_id: int, db: Session = Depends(get_db)):
+    """Remove a division from the registry (does not affect existing line assignments)."""
+    db.query(Division).filter_by(id=div_id, org_id=org_id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+# ── Bulk retag ────────────────────────────────────────────────────────────────
+
+@app.post("/api/orgs/{org_id}/retag")
+def bulk_retag(
+    org_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Bulk-reassign a division across all bills for this org.
+
+    body fields:
+      new_division : str   — target division name  (required)
+      search       : str   — filter by subscriber name / number substring  (optional)
+      from_division: str   — only retag lines currently in this division   (optional)
+      subscriber_numbers: list[str] — explicit list of subscriber numbers  (optional)
+      bill_id      : int   — limit to a single bill                        (optional)
+      actor        : str   — who is making the change                      (optional)
+      note         : str   — reason / notes                                (optional)
+      dry_run      : bool  — preview without saving                        (optional)
+    """
+    new_div  = body.get("new_division", "").strip()
+    if not new_div:
+        raise HTTPException(400, "new_division is required")
+
+    search      = body.get("search", "").strip()
+    from_div    = body.get("from_division", "").strip()
+    explicit    = body.get("subscriber_numbers", [])
+    bill_id     = body.get("bill_id")
+    actor       = body.get("actor", "user")
+    note        = body.get("note", "")
+    dry_run     = bool(body.get("dry_run", False))
+
+    q = db.query(InvoiceLine).filter_by(org_id=org_id)
+    if bill_id:
+        q = q.filter_by(bill_id=int(bill_id))
+    if from_div:
+        q = q.filter_by(division=from_div)
+    if explicit:
+        q = q.filter(InvoiceLine.subscriber_number.in_(explicit))
+    if search:
+        safe = search.replace("%", r"\%").replace("_", r"\_")
+        q = q.filter(
+            InvoiceLine.raw_name.ilike(f"%{safe}%")
+            | InvoiceLine.subscriber_number.ilike(f"%{safe}%")
+        )
+
+    lines = q.all()
+    affected = [l for l in lines if l.division != new_div]
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_change": len(affected),
+            "sample": [
+                {"subscriber_number": l.subscriber_number,
+                 "raw_name": l.raw_name,
+                 "current_division": l.division,
+                 "new_division": new_div}
+                for l in affected[:20]
+            ],
+        }
+
+    # Apply changes
+    ensure_division(org_id, new_div, db)
+    changed_subs: set[str] = set()
+    for line in affected:
+        _log_change(org_id, "invoice_line", line.subscriber_number,
+                    "division", line.division, new_div, actor=actor, note=note, db=db)
+        line.division = new_div
+        changed_subs.add(line.subscriber_number)
+
+    # Also update SubscriberProfile.division_override for persistence across future bills
+    for sub_num in changed_subs:
+        profile = db.query(SubscriberProfile).filter_by(
+            org_id=org_id, subscriber_number=sub_num
+        ).first()
+        if not profile:
+            profile = SubscriberProfile(org_id=org_id, subscriber_number=sub_num)
+            db.add(profile)
+        if profile.division_override != new_div:
+            _log_change(org_id, "subscriber_profile", sub_num,
+                        "division_override", profile.division_override, new_div,
+                        actor=actor, note=note, db=db)
+        profile.division_override = new_div
+
+    db.add(AuditLog(
+        org_id=org_id, action="division.bulk_retag",
+        detail=f"new={new_div!r}, changed={len(affected)}, subs={len(changed_subs)}, "
+               f"search={search!r}, from={from_div!r}",
+    ))
+    db.commit()
+    logger.info("Bulk retag: org=%s new=%r changed=%d", org_id, new_div, len(affected))
+    return {
+        "changed_lines": len(affected),
+        "changed_subscribers": len(changed_subs),
+        "new_division": new_div,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHANGE LOG + ROLLBACK ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/orgs/{org_id}/changes")
+def get_change_log(
+    org_id: str,
+    entity_type: str = "",
+    field: str = "",
+    subscriber_number: str = "",
+    limit: int = 100,
+    include_rolled_back: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Return the detailed change log with rollback status."""
+    q = db.query(ChangeLog).filter_by(org_id=org_id)
+    if not include_rolled_back:
+        q = q.filter_by(rolled_back=False)
+    if entity_type:
+        q = q.filter_by(entity_type=entity_type)
+    if field:
+        q = q.filter_by(field=field)
+    if subscriber_number:
+        q = q.filter_by(entity_id=subscriber_number)
+    rows = q.order_by(ChangeLog.created_at.desc()).limit(min(limit, 1000)).all()
+    return [
+        {
+            "id": r.id,
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "field": r.field,
+            "prev_value": r.prev_value,
+            "new_value": r.new_value,
+            "actor": r.actor,
+            "note": r.note,
+            "created_at": str(r.created_at)[:19],
+            "rolled_back": r.rolled_back,
+            "rolled_back_at": str(r.rolled_back_at)[:19] if r.rolled_back_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/orgs/{org_id}/changes/{change_id}/rollback")
+def rollback_change(
+    org_id: str,
+    change_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Revert a single change: restore prev_value to the entity.
+    Works for both invoice_line division changes and subscriber_profile field changes.
+    """
+    entry = db.query(ChangeLog).filter_by(id=change_id, org_id=org_id).first()
+    if not entry:
+        raise HTTPException(404, "Change not found")
+    if entry.rolled_back:
+        raise HTTPException(409, "Already rolled back")
+
+    if entry.entity_type == "invoice_line":
+        # Update ALL invoice lines for this subscriber (across all bills in org)
+        db.query(InvoiceLine).filter_by(
+            org_id=org_id,
+            subscriber_number=entry.entity_id,
+            division=entry.new_value,
+        ).update({"division": entry.prev_value})
+
+    elif entry.entity_type == "subscriber_profile":
+        profile = db.query(SubscriberProfile).filter_by(
+            org_id=org_id, subscriber_number=entry.entity_id
+        ).first()
+        if profile and entry.field in {
+            "display_name", "division_override", "tags",
+            "device_type", "notes", "tariff_override",
+        }:
+            setattr(profile, entry.field, entry.prev_value)
+
+    entry.rolled_back = True
+    entry.rolled_back_at = datetime.utcnow()
+    db.add(AuditLog(
+        org_id=org_id, action="change.rollback",
+        detail=f"change_id={change_id} entity={entry.entity_id} "
+               f"field={entry.field} restored={entry.prev_value!r}",
+    ))
+    db.commit()
+    return {"ok": True, "restored_value": entry.prev_value}
+
+
+@app.post("/api/orgs/{org_id}/changes/rollback-bulk")
+def rollback_bulk(
+    org_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Roll back multiple change IDs in one request."""
+    ids = body.get("change_ids", [])
+    if not ids:
+        raise HTTPException(400, "change_ids list is required")
+    rolled = 0
+    errors = []
+    for cid in ids:
+        entry = db.query(ChangeLog).filter_by(id=cid, org_id=org_id).first()
+        if not entry:
+            errors.append(f"id={cid} not found")
+            continue
+        if entry.rolled_back:
+            errors.append(f"id={cid} already rolled back")
+            continue
+        if entry.entity_type == "invoice_line":
+            db.query(InvoiceLine).filter_by(
+                org_id=org_id,
+                subscriber_number=entry.entity_id,
+                division=entry.new_value,
+            ).update({"division": entry.prev_value})
+        elif entry.entity_type == "subscriber_profile":
+            profile = db.query(SubscriberProfile).filter_by(
+                org_id=org_id, subscriber_number=entry.entity_id
+            ).first()
+            if profile and entry.field in {
+                "display_name", "division_override", "tags",
+                "device_type", "notes", "tariff_override",
+            }:
+                setattr(profile, entry.field, entry.prev_value)
+        entry.rolled_back = True
+        entry.rolled_back_at = datetime.utcnow()
+        rolled += 1
+    db.add(AuditLog(org_id=org_id, action="change.rollback_bulk",
+                    detail=f"rolled={rolled} of {len(ids)}"))
+    db.commit()
+    return {"rolled_back": rolled, "errors": errors}
+
+
+# ── Graceful shutdown ─────────────────────────────────────────────────────────
+
+@app.post("/api/shutdown")
+def graceful_shutdown(delay: int = 1):
+    """Trigger a clean server shutdown (used by the Stop button in the UI)."""
+    import threading, signal, os as _os
+    def _stop():
+        import time; time.sleep(delay)
+        logger.info("Graceful shutdown requested via API")
+        _os.kill(_os.getpid(), signal.SIGTERM)
+    threading.Thread(target=_stop, daemon=True).start()
+    return {"ok": True, "message": "Server shutting down…"}
+
+
+# ── Division search for retag UI ──────────────────────────────────────────────
+
+@app.get("/api/orgs/{org_id}/retag-preview")
+def retag_preview(
+    org_id: str,
+    search: str = "",
+    from_division: str = "",
+    bill_id: int = None,
+    db: Session = Depends(get_db),
+):
+    """Preview which lines would be affected by a retag without committing."""
+    q = db.query(InvoiceLine).filter_by(org_id=org_id)
+    if bill_id:
+        q = q.filter_by(bill_id=bill_id)
+    if from_division:
+        q = q.filter_by(division=from_division)
+    if search:
+        safe = search.replace("%", r"\%").replace("_", r"\_")
+        q = q.filter(
+            InvoiceLine.raw_name.ilike(f"%{safe}%")
+            | InvoiceLine.subscriber_number.ilike(f"%{safe}%")
+            | InvoiceLine.tariff_plan.ilike(f"%{safe}%")
+        )
+    rows = q.order_by(InvoiceLine.amount_due_kes.desc()).limit(200).all()
+    return {
+        "count": len(rows),
+        "lines": [
+            {
+                "subscriber_number": r.subscriber_number,
+                "raw_name": r.raw_name,
+                "tariff_plan": r.tariff_plan,
+                "division": r.division,
+                "amount_due_kes": round(r.amount_due_kes, 2),
+                "bill_id": r.bill_id,
+            }
+            for r in rows
+        ],
+    }
 
 # ── Serve dashboard ──────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)

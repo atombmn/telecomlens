@@ -1,49 +1,56 @@
 # 📡 TelecomLens
 
-**TelecomLens** is a self-hosted telecom bill analytics dashboard for organisations that receive monthly postpay invoices from Safaricom (and other Kenyan carriers). It turns raw PDFs into actionable spend intelligence — division-level chargebacks, anomaly detection, budget vs actual, forecasting, subscriber lifecycle tracking, and more.
+**TelecomLens** is a self-hosted telecom bill analytics dashboard for organisations that receive monthly Safaricom postpay invoices. It turns raw PDF bills into actionable spend intelligence — with full division management, bulk re-tagging, a reversible change log, budget vs actual, forecasting, and clean one-click exports.
 
 ---
 
-## Features at a glance
+## What's new in v4.0
 
-| Area | Capabilities |
-|------|-------------|
-| **Executive** | KPI cards, spend-by-division doughnut, charge components, drill-down on every cell |
-| **Finance** | Tax reconciliation (Excise 15% + VAT 16%), chargeback register, GL account mapping |
-| **ICT** | Subscriber search, division filter, per-line tariff and CDR count |
-| **Operations** | Anomaly tracker, flagged lines with one-click drill-down |
-| **Trends** | Multi-month spend trend, division stacked bars, subscriber count, top spenders |
-| **Subscribers** | Registry with tags, device types, manual division remapping, lifecycle events (activations/deactivations/plan changes) |
-| **Budget & Forecast** | Budget vs actual per division, 3-month linear regression forecast with confidence bands, spend alerts with threshold breach detection, cost-per-head benchmarks |
-| **Reports & Export** | Custom report builder (.docx), per-division Excel chargeback pack, inline annotations, CSV export |
-| **Data & Integrations** | Audit trail, outbound webhooks (with HMAC signing), multi-carrier detection |
+- **Division Manager** — create, rename (cascades across all bills), recolour, and manage your org's full division list
+- **Bulk Retag** — search lines by name, number, or tariff; preview affected rows; move them to any division in one click
+- **Change Log & Rollback** — every division reassignment is logged with who made it and why; undo individual changes or bulk-rollback a selection
+- **Graceful Stop** — a Stop button in the header cleanly shuts the server down without needing the terminal
+- **Cleaner UI** — 9 tabs consolidated to 6 (Overview, Finance, Subscribers, Divisions, Analytics, Settings); no more tab overflow on normal screens
+- **Accurate parser** — re-calibrated against a real Safaricom postpay bill; all financial fields (pre-tax, excise, VAT, outstanding, total) now extract correctly
+- **Import progress overlay** — a full-screen progress bar replaces the silent hang during large imports
 
-### Drill-down everywhere
-Click any KPI card, chart bar, doughnut segment, or table row to open a side panel with the exact line items, a sparkline history, top-3 contributors, and a filtered CSV export.
+---
 
-### Customisable labels
-Every tab name, KPI card title, and section heading is editable via the ✎ Customise button — changes persist in the browser and apply throughout the dashboard including exported reports.
+## Features
+
+| Tab | What you see |
+|-----|-------------|
+| **Overview** | KPI tiles (spend, outstanding, subscribers, anomalies), division donut + charge components charts, division detail table, anomaly register |
+| **Finance** | Pre-tax / excise / VAT reconciliation with expected vs actual, chargeback register, one-click CSV / Excel / .docx export |
+| **Subscribers** | Registry (search, filter by division/tag), lifecycle events (activations, deactivations, plan changes), tag manager |
+| **Divisions** | Division Manager (create/rename/recolour), Bulk Retag tool, Change Log with individual and bulk rollback |
+| **Analytics** | Spend trend, budget vs actual, 3-month forecast with confidence bands, spend alerts, cost-per-head benchmarks |
+| **Settings** | Custom report builder (.docx), Excel chargeback pack, annotations, webhooks, audit trail, carrier detection |
+
+**Drill-down on everything** — click any KPI tile, chart bar/segment, or table row to open a side panel with the exact line items, a sparkline history, top-3 contributors, and a filtered CSV export.
+
+**Customise all labels** — every tab name, KPI title, and section heading is editable via the ⚙ button; changes persist in the browser.
 
 ---
 
 ## Requirements
 
-| Dependency | Notes |
-|-----------|-------|
-| Python 3.10+ | 3.13 / 3.14 fully supported |
-| pdftotext (Poppler) | Bundled automatically on Windows by `install.bat` |
-| pip packages | See `requirements.txt` — installed by the setup script |
+| | Minimum |
+|-|---------|
+| Python | 3.10+ (3.13 / 3.14 fully supported) |
+| pdftotext | Installed automatically on Windows by `install.bat` |
+| Disk | ~50 MB for app; ~1 MB per bill imported |
 
 ---
 
 ## Quick start
 
 ### Windows
-```
+```bat
 git clone https://github.com/atombmn/telecomlens.git
 cd telecomlens
-install.bat          # one-time setup: venv + packages + Poppler
-start.bat            # launch server + open browser
+install.bat       :: one-time setup
+start.bat         :: launch + open browser
 ```
 
 ### Linux / macOS
@@ -51,113 +58,96 @@ start.bat            # launch server + open browser
 git clone https://github.com/atombmn/telecomlens.git
 cd telecomlens
 chmod +x install.sh start.sh
-./install.sh         # one-time setup
-./start.sh           # launch server + open browser
+./install.sh      # one-time setup
+./start.sh        # launch + open browser
 ```
 
-Then open **http://localhost:8000** and import your first PDF bill.
+Open **http://localhost:8000**, then click **⊕ Import** to load your first bill.
+
+To stop the server: click **⏹ Stop** in the header, or press `Ctrl+C` in the terminal.
 
 ---
 
 ## Configuration (`.env`)
 
-The installer creates `.env` automatically. Available settings:
-
 ```ini
-DATABASE_URL=sqlite:///./telecomlens.db   # any SQLAlchemy URL
-BILLS_FOLDER=bills                         # folder for batch imports
-POPPLER_PATH=poppler                       # path to Poppler on Windows
-CORS_ORIGINS=*                             # restrict to e.g. http://192.168.1.10:8000
+DATABASE_URL=sqlite:///./telecomlens.db   # swap for Postgres/MySQL in production
+BILLS_FOLDER=bills                         # folder for batch folder imports
+POPPLER_PATH=poppler                       # Windows only: path to Poppler bin
+CORS_ORIGINS=*                             # restrict to IP for shared deployments
 ```
 
 ---
 
-## Importing bills
+## Division management workflow
 
-### Single bill
-Click **⊕ Import PDF** in the top bar and choose one or more PDF files.
-
-### Batch folder import
-Place PDFs in `bills/` (or any folder), then call:
-```
-POST /api/bills/import-folder
-Body: {"folder": "C:/bills/2026"}
-```
+1. **Import a bill** — lines are auto-classified by tariff plan, subscriber name, CDR mix, and invoice block text
+2. **Open Divisions → Bulk Retag** — search for lines by name/number/tariff; preview what will change; set the target division; apply
+3. **Check the Change Log** — every change is listed with timestamp and note; tick boxes and click "Rollback selected" to undo
+4. **Rename a division** — go to Divisions → Division Manager → Rename; the new name cascades to all imported bills instantly
+5. **Re-import future bills** — subscriber profiles carry the division overrides forward, so future imports are already pre-classified
 
 ---
 
 ## Budget & Forecast
 
-1. Open the **Budget & Forecast** tab
-2. Click **✎ Edit Budgets** to enter monthly KES budget per division, or click **⬇ CSV Template** to download a pre-filled template, fill it in Excel, and upload via **⊕ Import Budget CSV**
-3. The **Budget vs Actual** view shows actual vs budget with a coloured status badge and a trend chart with a dotted budget line
-4. **Spend Alerts** — set a KES ceiling per subscriber, division, or total bill. A red banner appears when the latest bill breaches any threshold
-5. **Cost-per-Head** — add headcount in the budget editor to rank divisions by cost-per-employee
+1. **Analytics → Budget vs Actual** → click **✎ Edit Budgets** to enter monthly KES targets per division, or download the CSV template, fill it in, and upload
+2. The trend chart shows a dotted budget line; the table shows variance and a colour-coded status badge per division
+3. **Analytics → Alerts** → add spend ceilings per subscriber, division, or total bill; a red breach banner appears when the latest bill exceeds any threshold
+4. **Analytics → Forecast** → 3-month linear regression with confidence bands, based on all imported bill history
 
 ---
 
-## Subscriber Management
-
-- **Registry** — searchable list of all known lines with editable metadata (display name, division override, tags, device type, expected tariff, notes)
-- **Tags** — apply custom labels (e.g. `contractor`, `executive`, `shared pool`) to individual lines or in bulk to all filtered subscribers
-- **Lifecycle** — automatically detects new activations, deactivations, and tariff plan changes across consecutive bills
-
----
-
-## Reports & Export
+## Exporting
 
 | Export | How |
 |--------|-----|
-| Executive .docx | Click **📄 Report** in the top bar (full standard report) |
-| Custom .docx | Reports & Export tab → Report Builder (choose sections + divisions) |
-| Chargeback Excel | Reports & Export tab → Excel Packs (multi-sheet, one tab per division) |
-| Chargeback CSV | Click **⬇ Chargeback CSV** in the top bar |
-
-Annotations added in the Reports & Export tab appear as footnotes in exported .docx reports.
+| Standard .docx report | Finance tab → Report button, or Settings → Export → Quick Exports |
+| Custom .docx | Settings → Export → Custom Report Builder (choose sections + divisions) |
+| Chargeback Excel | Finance tab → Excel button; multi-sheet, one tab per division |
+| Chargeback CSV | Finance tab → CSV button |
+| Subscriber list CSV | Subscribers tab → CSV button |
 
 ---
 
 ## Webhooks
 
-After each bill import, TelecomLens can POST a JSON payload to any URL:
-
+After each bill import TelecomLens POSTs JSON to configured URLs:
 ```json
 {
   "event": "bill.imported",
-  "org_id": "acc001",
-  "bill_id": 12,
-  "statement_date": "2026-03",
-  "account_total": 125000.00,
-  "subscriber_count": 45
+  "org_id": "z0000605",
+  "bill_id": 1,
+  "statement_date": "01/05/2026",
+  "account_total": 1087536.49,
+  "subscriber_count": 1470
 }
 ```
-
-Set a shared secret in the webhook config to receive an HMAC-SHA256 signature in `X-TelecomLens-Signature: sha256=<hex>`.
-
-Configure webhooks: **Data & Integrations → Webhooks → + Add webhook**
+Configure in **Settings → Webhooks**. Optional HMAC-SHA256 signing via `X-TelecomLens-Signature`.
 
 ---
 
 ## API
 
-Interactive API docs are available at **http://localhost:8000/docs** once the server is running.
+Interactive docs: **http://localhost:8000/docs**
 
-Key endpoint groups:
+Key endpoints:
 
-| Prefix | Purpose |
-|--------|---------|
-| `GET /api/bills/*` | Bill data, summaries, subscribers, CDRs, drill-down |
-| `GET/POST /api/orgs/{id}/budgets` | Budget management |
-| `GET /api/orgs/{id}/budget-vs-actual` | Budget vs actual comparison |
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/bills/upload` | Import a PDF bill |
+| `GET /api/bills/{id}/summary` | Bill totals (spend, taxes, outstanding) |
+| `GET /api/bills/{id}/drilldown` | Line items for any field/value |
+| `POST /api/orgs/{id}/retag` | Bulk-reassign divisions |
+| `GET /api/orgs/{id}/changes` | Change log |
+| `POST /api/orgs/{id}/changes/{id}/rollback` | Undo a single change |
+| `POST /api/orgs/{id}/changes/rollback-bulk` | Undo multiple changes |
+| `GET /api/orgs/{id}/divisions` | Division registry |
+| `PATCH /api/orgs/{id}/divisions/{id}` | Rename / recolour a division |
+| `GET /api/orgs/{id}/budget-vs-actual` | Budget vs actual per period |
 | `GET /api/orgs/{id}/forecast` | 3-month spend forecast |
-| `GET/POST /api/orgs/{id}/alerts` | Spend alert thresholds |
-| `GET/PATCH /api/orgs/{id}/subscribers` | Subscriber profile management |
-| `GET /api/orgs/{id}/lifecycle` | Activation/deactivation/plan-change events |
-| `GET/POST /api/orgs/{id}/webhooks` | Webhook configuration |
 | `GET /api/orgs/{id}/audit-log` | Audit trail |
-| `POST /api/bills/{id}/annotations` | Inline annotations |
-| `GET /api/bills/{id}/chargeback-excel.xlsx` | Per-division Excel pack |
-| `POST /api/bills/{id}/report-custom.docx` | Custom report builder |
+| `POST /api/shutdown` | Graceful server stop |
 
 ---
 
@@ -165,43 +155,41 @@ Key endpoint groups:
 
 ```
 telecomlens/
-├── main.py              FastAPI backend — all endpoints, DB models
-├── parser.py            PDF text → structured invoice data
+├── main.py              FastAPI app — all DB models (11), endpoints (44+)
+├── parser.py            PDF → structured invoice data (calibrated to real bills)
 ├── discover.py          Subscriber name classification helpers
 ├── report.py            .docx report generator (python-docx)
 ├── requirements.txt     Python dependencies
-├── install.bat          Windows one-shot installer
-├── install.sh           Linux / macOS one-shot installer
-├── start.bat            Windows launcher
-├── start.sh             Linux / macOS launcher
+├── install.bat / .sh    One-shot installer (Windows / Linux+macOS)
+├── start.bat / .sh      Server launcher
 ├── bills/               Drop PDFs here for batch import
 └── static/
-    └── index.html       Single-file SPA dashboard
+    └── index.html       Single-file SPA dashboard (~100 KB)
 ```
 
 ---
 
 ## Multi-carrier support
 
-| Carrier | Parser support |
-|---------|---------------|
+| Carrier | Parser |
+|---------|--------|
 | Safaricom | Full |
 | Airtel Kenya | Basic (beta) |
 | Telkom Kenya | Basic (beta) |
 | Faiba / JTL | Experimental |
 
-Bills from multiple carriers can coexist — each gets its own organisation record with separate budget, subscriber, and trend data.
-
 ---
 
 ## Contributing
 
-Pull requests welcome. Before submitting:
-- Run `python3 -m py_compile main.py parser.py discover.py report.py`
-- Test bill import and report download with a real or synthetic PDF
+See `CONTRIBUTING.md`. Quick checklist before a PR:
+```bash
+python3 -m py_compile main.py parser.py discover.py report.py
+node --check static/index.html  # or extract the <script> block
+```
 
 ---
 
 ## License
 
-MIT — see `LICENSE` for details.
+MIT — see `LICENSE`.
