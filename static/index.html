@@ -164,6 +164,19 @@ tr.clickable:hover td:first-child::after{content:" ↗";color:var(--blue);font-s
   </div>
 </div>
 
+<!-- Import progress overlay -->
+<div id="import-overlay" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.55);align-items:center;justify-content:center;flex-direction:column;gap:16px">
+  <div style="background:var(--card);border-radius:12px;padding:28px 36px;min-width:340px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)">
+    <div style="font-size:32px;margin-bottom:12px">📡</div>
+    <div style="font-size:16px;font-weight:600;color:var(--fg);margin-bottom:6px" id="import-title">Importing bill…</div>
+    <div style="font-size:13px;color:var(--fg3);margin-bottom:18px" id="import-status">Reading PDF…</div>
+    <div style="background:var(--bg3);border-radius:99px;height:6px;overflow:hidden;margin-bottom:10px">
+      <div id="import-bar" style="background:var(--blue);height:100%;border-radius:99px;width:0%;transition:width .4s ease"></div>
+    </div>
+    <div style="font-size:11px;color:var(--fg3)" id="import-detail"></div>
+  </div>
+</div>
+
 <!-- Drill-down overlay + panel -->
 <div id="drill-overlay" onclick="closeDrill()"></div>
 <div id="drill-panel">
@@ -489,6 +502,7 @@ async function loadBillData(billId) {
 
 async function loadTrends() {
   S.trends = await apiFetch('/api/trends' + (S.activeOrgId ? `?org_id=${S.activeOrgId}` : '')) || [];
+  return S.trends;
 }
 async function loadTopSpenders() {
   S.topSpenders = await apiFetch('/api/trends/top-spenders' + (S.activeOrgId ? `?org_id=${S.activeOrgId}` : '')) || [];
@@ -925,20 +939,72 @@ function initTabCharts(tab) {
 }
 
 // ─── IMPORT ──────────────────────────────────────────────────────────────────
+function showImportProgress(show) {
+  const el = document.getElementById('import-overlay');
+  if (el) el.style.display = show ? 'flex' : 'none';
+}
+function setImportStatus(title, status, pct, detail) {
+  const t = document.getElementById('import-title');
+  const s = document.getElementById('import-status');
+  const b = document.getElementById('import-bar');
+  const d = document.getElementById('import-detail');
+  if (t) t.textContent = title;
+  if (s) s.textContent = status;
+  if (b) b.style.width = pct + '%';
+  if (d) d.textContent = detail || '';
+}
+
 function openImport() {
   const input = document.createElement('input');
   input.type = 'file'; input.accept = '.pdf'; input.multiple = true;
   input.onchange = async () => {
-    for (const file of input.files) {
-      const fd = new FormData(); fd.append('file', file);
-      const r = await fetch('/api/bills/upload', { method: 'POST', body: fd });
-      const data = await r.json();
-      console.log('Uploaded', file.name, data);
+    const files = [...input.files];
+    showImportProgress(true);
+    const results = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const pct = Math.round((i / files.length) * 80);
+      const label = files.length > 1 ? ('bill ' + (i+1) + ' of ' + files.length) : file.name;
+      setImportStatus(
+        'Importing ' + label,
+        'Uploading & parsing PDF…',
+        pct,
+        file.name
+      );
+      try {
+        const fd = new FormData(); fd.append('file', file);
+        const r = await fetch('/api/bills/upload', { method: 'POST', body: fd });
+        const data = await r.json();
+        results.push({ file: file.name, ...data });
+        const subMsg = data.status === 'ok'
+          ? ('✓ Stored ' + (data.subscriber_count || 0).toLocaleString() + ' subscribers — KES ' + (data.account_total||0).toLocaleString('en-KE', {maximumFractionDigits:0}))
+          : data.status === 'duplicate' ? 'Already imported — skipping' : 'Warning: check console';
+        setImportStatus(
+          'Importing ' + label,
+          subMsg,
+          pct + 10,
+          data.org_name || data.org_id || ''
+        );
+      } catch (err) {
+        results.push({ file: file.name, status: 'error', error: err.message });
+      }
     }
+    setImportStatus('Finalising…', 'Loading dashboard…', 95, '');
     await loadOrgs();
     await loadBills(S.activeOrgId);
     if (S.activeBillId) await loadBillData(S.activeBillId);
+    setImportStatus('Done!', 'Import complete.', 100, '');
+    await new Promise(r => setTimeout(r, 900));
+    showImportProgress(false);
     renderTab(S.activeTab);
+    requestAnimationFrame(() => { try { initTabCharts(S.activeTab); } catch(_){} });
+    // Summary toast
+    const ok = results.filter(r => r.status === 'ok').length;
+    const dup = results.filter(r => r.status === 'duplicate').length;
+    const err = results.filter(r => r.status === 'error').length;
+    if (results.length > 1 || err > 0) {
+      alert(`Import complete:\n✓ ${ok} imported\n◷ ${dup} duplicate(s)\n✗ ${err} error(s)`);
+    }
   };
   input.click();
 }
@@ -1023,7 +1089,17 @@ function switchSubView(view) {
 }
 
 async function loadSubscriberRegistry() {
-  if (!S.activeOrgId) return;
+  if (!S.activeOrgId) {
+    const body = document.getElementById('sub-view-body');
+    if (body) body.innerHTML = '<div class="empty">Import a bill first to populate the subscriber registry.</div>';
+    const kpiTotal = document.getElementById('sub-kpi-total');
+    const kpiEv = document.getElementById('sub-kpi-events');
+    const kpiTags = document.getElementById('sub-kpi-tags');
+    if (kpiTotal) kpiTotal.textContent = '0';
+    if (kpiEv) kpiEv.textContent = '0';
+    if (kpiTags) kpiTags.textContent = '0';
+    return;
+  }
   const [subData, tags, lifecycle] = await Promise.all([
     apiFetch(`/api/orgs/${S.activeOrgId}/subscribers?limit=80`),
     apiFetch(`/api/orgs/${S.activeOrgId}/tags`),
@@ -1357,7 +1433,11 @@ function switchBudgetView(view) {
 }
 
 async function loadBudgetData() {
-  if (!S.activeOrgId) return;
+  if (!S.activeOrgId) {
+    const body = document.getElementById('budget-view-body');
+    if (body) body.innerHTML = '<div class="empty">Import a bill first to use Budget & Forecast features.</div>';
+    return;
+  }
   const [bva, forecast, breaches, alerts] = await Promise.all([
     apiFetch(`/api/orgs/${S.activeOrgId}/budget-vs-actual`),
     apiFetch(`/api/orgs/${S.activeOrgId}/forecast`),
@@ -1893,7 +1973,11 @@ function switchReportView(view) {
 }
 
 async function loadReportingData() {
-  if (!S.activeBillId) return;
+  if (!S.activeBillId) {
+    const body = document.getElementById('report-view-body');
+    if (body) body.innerHTML = '<div class="empty">Select a bill to access reporting features.</div>';
+    return;
+  }
   S.annotations = await apiFetch(`/api/bills/${S.activeBillId}/annotations`) || [];
   renderReportBuilder();
 }
@@ -2193,7 +2277,11 @@ function switchIntView(view) {
 }
 
 async function loadIntegrationsData() {
-  if (!S.activeOrgId) return;
+  if (!S.activeOrgId) {
+    const body = document.getElementById('int-view-body');
+    if (body) body.innerHTML = '<div class="empty">Import a bill first to use Data & Integrations features.</div>';
+    return;
+  }
   const [audit, webhooks, carriers] = await Promise.all([
     apiFetch(`/api/orgs/${S.activeOrgId}/audit-log?limit=50`),
     apiFetch(`/api/orgs/${S.activeOrgId}/webhooks`),
