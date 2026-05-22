@@ -4,6 +4,15 @@
 
 ---
 
+## What's new in v4.1
+
+- **Smart org detection** — all tabs (Subscribers, Divisions, Analytics, Settings) auto-detect the organisation from imported bills; no more "Import a bill first" screens when data already exists
+- **Better search** — subscriber and retag searches use exact match for phone numbers (7+ digits) and partial match for name/tariff fragments; raw_name from invoice lines is now also searched
+- **System resource monitor** — RAM/CPU indicator in the header; polls every 30 seconds; colour-coded (green/amber/orange); psutil-powered
+- **Analytics bill comparisons** — explicit bill comparison dropdown above the Analytics subtabs when multiple bills are imported
+- **Retag improvements** — bill scope dropdown lists all imported bills; "Move to division" is now a select + input hybrid to prevent typos
+- **Terminal stays open** — the Stop button now stops the server and keeps the terminal window open with a "press any key to close" prompt
+
 ## What's new in v4.0
 
 - **Division Manager** — create, rename (cascades across all bills), recolour, and manage your org's full division list

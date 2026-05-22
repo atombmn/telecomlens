@@ -1350,15 +1350,41 @@ def list_subscriber_profiles(
     q = db.query(SubscriberProfile).filter_by(org_id=org_id)
     if search:
         safe = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        q = q.filter(
-            SubscriberProfile.subscriber_number.ilike(f"%{safe}%")
-            | SubscriberProfile.display_name.ilike(f"%{safe}%")
-        )
+        # Exact match on number, partial match on name/display_name
+        is_number = re.match(r"^\d{7,}$", search.strip())
+        if is_number:
+            q = q.filter(SubscriberProfile.subscriber_number == search.strip())
+        else:
+            # Also match against raw_name stored on any InvoiceLine for this subscriber
+            matched_subs = (
+                db.query(InvoiceLine.subscriber_number)
+                .filter(
+                    InvoiceLine.org_id == org_id,
+                    InvoiceLine.raw_name.ilike(f"%{safe}%"),
+                )
+                .distinct()
+                .subquery()
+            )
+            q = q.filter(
+                SubscriberProfile.subscriber_number.ilike(f"%{safe}%")
+                | SubscriberProfile.display_name.ilike(f"%{safe}%")
+                | SubscriberProfile.subscriber_number.in_(matched_subs)
+            )
     if tag:
         safe_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         q = q.filter(SubscriberProfile.tags.ilike(f"%{safe_tag}%"))
     if division:
-        q = q.filter(SubscriberProfile.division_override == division)
+        # Match on override OR actual division from latest line
+        sub_with_div = (
+            db.query(InvoiceLine.subscriber_number)
+            .filter(InvoiceLine.org_id == org_id, InvoiceLine.division == division)
+            .distinct()
+            .subquery()
+        )
+        q = q.filter(
+            (SubscriberProfile.division_override == division)
+            | SubscriberProfile.subscriber_number.in_(sub_with_div)
+        )
     total = q.count()
     profiles = q.order_by(SubscriberProfile.display_name).offset((page - 1) * limit).limit(limit).all()
 
@@ -1979,10 +2005,14 @@ def bulk_retag(
         q = q.filter(InvoiceLine.subscriber_number.in_(explicit))
     if search:
         safe = search.replace("%", r"\%").replace("_", r"\_")
-        q = q.filter(
-            InvoiceLine.raw_name.ilike(f"%{safe}%")
-            | InvoiceLine.subscriber_number.ilike(f"%{safe}%")
-        )
+        is_number = re.match(r"^\d{7,}$", search.strip())
+        if is_number:
+            q = q.filter(InvoiceLine.subscriber_number == search.strip())
+        else:
+            q = q.filter(
+                InvoiceLine.raw_name.ilike(f"%{safe}%")
+                | InvoiceLine.subscriber_number.ilike(f"%{safe}%")
+            )
 
     lines = q.all()
     affected = [l for l in lines if l.division != new_div]
@@ -2169,6 +2199,30 @@ def rollback_bulk(
     return {"rolled_back": rolled, "errors": errors}
 
 
+
+
+@app.get("/api/health/resources")
+def resource_stats():
+    """System resource snapshot — used by the dashboard health indicator."""
+    try:
+        import psutil, os as _os
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        proc = psutil.Process(_os.getpid())
+        return {
+            "ok": True,
+            "cpu_pct": round(cpu, 1),
+            "ram_total_mb": round(mem.total / 1024 / 1024),
+            "ram_used_mb":  round(mem.used  / 1024 / 1024),
+            "ram_pct":      round(mem.percent, 1),
+            "proc_rss_mb":  round(proc.memory_info().rss / 1024 / 1024, 1),
+            "warning": mem.percent > 80,
+            "critical": mem.percent > 90,
+        }
+    except ImportError:
+        return {"ok": False, "error": "psutil not installed — run: pip install psutil"}
+
+
 # ── Graceful shutdown ─────────────────────────────────────────────────────────
 
 @app.post("/api/shutdown")
@@ -2201,11 +2255,15 @@ def retag_preview(
         q = q.filter_by(division=from_division)
     if search:
         safe = search.replace("%", r"\%").replace("_", r"\_")
-        q = q.filter(
-            InvoiceLine.raw_name.ilike(f"%{safe}%")
-            | InvoiceLine.subscriber_number.ilike(f"%{safe}%")
-            | InvoiceLine.tariff_plan.ilike(f"%{safe}%")
-        )
+        is_number = re.match(r"^\d{7,}$", search.strip())
+        if is_number:
+            q = q.filter(InvoiceLine.subscriber_number == search.strip())
+        else:
+            q = q.filter(
+                InvoiceLine.raw_name.ilike(f"%{safe}%")
+                | InvoiceLine.subscriber_number.ilike(f"%{safe}%")
+                | InvoiceLine.tariff_plan.ilike(f"%{safe}%")
+            )
     rows = q.order_by(InvoiceLine.amount_due_kes.desc()).limit(200).all()
     return {
         "count": len(rows),

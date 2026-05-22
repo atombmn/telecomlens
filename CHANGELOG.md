@@ -4,6 +4,34 @@ All notable changes to TelecomLens are documented here.
 
 ---
 
+## v4.1.0 — 2026-05-22
+
+### Fixed
+- **Subscribers / Divisions / Analytics / Settings tabs** — all tabs now auto-detect the active organisation from imported bills on first load; no longer shows "Import a bill first" when bills are already present
+- **Subscriber search** — now searches across `raw_name` from `InvoiceLine` records in addition to `display_name` on the profile; phone number searches (7+ digits) use exact match instead of partial
+- **Retag search** — phone number searches use exact match; partial match still applied to name and tariff fragments
+- **Drill-down table** — now shows four columns (Name, Number, Division, Amount); subscriber number and tariff plan always visible regardless of whether a display name exists
+- **Drilldown "Amounts"** — "KES" prefix added to each amount cell; numbers are right-aligned and formatted
+
+### Added
+- **System resource monitor** — lightweight RAM/CPU indicator in the header bar polls `/api/health/resources` every 30 seconds; colour-coded (green / amber / orange) with tooltip showing CPU%, RAM MB, and app RSS; powered by psutil
+- **`GET /api/health/resources`** — returns `cpu_pct`, `ram_total_mb`, `ram_used_mb`, `ram_pct`, `proc_rss_mb`, `warning` (>80%), `critical` (>90%) flags
+- **Analytics bill comparison selector** — when multiple bills are imported, a "Comparing: [All bills / pick one]" dropdown appears above the Analytics subtabs; selecting a bill filters all analytics views to that bill
+- **Division Retag — all bills in scope dropdown** — the "Bill scope" dropdown now lists every imported bill by date (not just "Current bill")
+- **Division Retag — "Move to" as select + input** — existing divisions are offered as a dropdown; user can still type a new division name in the adjacent input; reduces mis-typing of division names
+- **Finance tab** — added Total Spend + subscriber count KPI tile for full context alongside the tax components
+- **psutil** added to `requirements.txt`
+
+### Changed
+- **Stop button** — terminal window now stays open with a "TelecomLens has stopped — press any key" prompt after the server exits, allowing the user to read any final error messages (`start.bat` and `start.sh` both updated)
+- **Org auto-detection** — `loadBillData()` now infers `activeOrgId` from `allBills` when it is not already set, eliminating the "all tabs showing spinner" state after page reload with an existing database
+
+### Brainstorm additions (wishlist implemented)
+- Resource monitor is lightweight: single psutil call every 30s, no DB queries, no expensive computations; indicator is text-only (no chart) to minimise render cost
+- Analytics comparison is additive: the existing trends/BVA endpoints already return all bills; the new selector simply filters the view client-side without extra API calls
+
+---
+
 ## v4.0.0 — 2026-05-21
 
 ### Added
