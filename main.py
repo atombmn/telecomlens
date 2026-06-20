@@ -20,13 +20,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from sqlalchemy import (
     create_engine, Column, String, Float, Boolean, Integer,
-    DateTime, Text, JSON, func,
+    DateTime, Text, JSON, func, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from pydantic_settings import BaseSettings
 
 from parser import parse_bill, classify_line
 from discover import detect_org_tokens, classify_name, discover_patterns
+from msisdn import normalise_msisdn, display_msisdn
 # NOTE: report is imported lazily inside the endpoint so a missing python-docx
 # does not crash the whole app at startup.
 
@@ -49,6 +50,24 @@ engine = create_engine(
     connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
 )
 SessionLocal = sessionmaker(bind=engine)
+
+
+def statement_to_iso(raw: str) -> str:
+    """Convert a Safaricom 'dd/mm/yyyy' statement date into a sortable
+    'YYYY-MM-DD' string. Returns '' if unparseable. Idempotent: a value that
+    is already ISO is returned unchanged, so re-running the backfill is safe."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s)          # already ISO
+    if m:
+        return s
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)      # dd/mm/yyyy
+    if m:
+        d, mo, y = m.groups()
+        return f"{y}-{int(mo):02d}-{int(d):02d}"
+    return ""
+
 
 class Base(DeclarativeBase): pass
 
@@ -81,6 +100,7 @@ class BillUpload(Base):
     filename = Column(String)
     sha256 = Column(String, unique=True)
     statement_date = Column(String)
+    statement_iso = Column(String, default="", index=True)   # YYYY-MM-DD, sortable
     account_total = Column(Float, default=0)
     outstanding_total = Column(Float, default=0)
     total_net = Column(Float, default=0)
@@ -232,8 +252,100 @@ class ChangeLog(Base):
 Base.metadata.create_all(engine)
 
 
+# ── Schema migration & one-time backfill ───────────────────────────────────────
+# create_all() only creates *missing tables*; it does not add new columns to
+# tables that already exist in a deployed DB. So new columns need an explicit,
+# idempotent migration. (For non-SQLite engines, use a real migration tool.)
+
+_BACKFILL_MARKER = "migrate.msisdn_iso.v1"
+
+
+def _sqlite_column_exists(conn, table: str, col: str) -> bool:
+    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    return any(r[1] == col for r in rows)
+
+
+def _migrate_schema() -> None:
+    """Add columns that create_all cannot add to pre-existing tables."""
+    if "sqlite" not in settings.database_url:
+        return
+    with engine.begin() as conn:
+        if not _sqlite_column_exists(conn, "bill_uploads", "statement_iso"):
+            conn.execute(text(
+                "ALTER TABLE bill_uploads ADD COLUMN statement_iso VARCHAR DEFAULT ''"
+            ))
+            logger.info("migrate: added bill_uploads.statement_iso")
+
+
+def _merge_profiles(keep: "SubscriberProfile", dup: "SubscriberProfile") -> None:
+    """Fold a duplicate profile (same canonical number) into the survivor."""
+    di, ki = statement_to_iso(dup.first_seen_date), statement_to_iso(keep.first_seen_date)
+    if di and (not ki or di < ki):
+        keep.first_seen_date = dup.first_seen_date
+    if statement_to_iso(dup.last_seen_date) > statement_to_iso(keep.last_seen_date):
+        keep.last_seen_date = dup.last_seen_date
+    for f in ("display_name", "division_override", "device_type", "tariff_override", "notes"):
+        if not getattr(keep, f) and getattr(dup, f):
+            setattr(keep, f, getattr(dup, f))
+    tags = {t.strip() for t in (keep.tags or "").split(",") if t.strip()}
+    tags |= {t.strip() for t in (dup.tags or "").split(",") if t.strip()}
+    keep.tags = ",".join(sorted(tags))
+    keep.is_active = bool(keep.is_active or dup.is_active)
+
+
+def _backfill_once() -> None:
+    """One-time: populate statement_iso and canonicalise every stored MSISDN.
+    Guarded by an AuditLog marker so it runs once, then is a no-op each boot.
+    The work is itself idempotent, so a crash mid-way is safely retried."""
+    db = SessionLocal()
+    try:
+        if db.query(AuditLog).filter_by(action=_BACKFILL_MARKER).first():
+            return
+        logger.info("backfill: canonicalising MSISDNs + statement dates (one-time)…")
+
+        for b in db.query(BillUpload).all():
+            iso = statement_to_iso(b.statement_date)
+            if iso and b.statement_iso != iso:
+                b.statement_iso = iso
+
+        for line in db.query(InvoiceLine).all():
+            c = normalise_msisdn(line.subscriber_number)
+            if c != (line.subscriber_number or ""):
+                line.subscriber_number = c
+
+        for cdr in db.query(CDRRecord).all():
+            c = normalise_msisdn(cdr.subscriber_number)
+            if c != (cdr.subscriber_number or ""):
+                cdr.subscriber_number = c
+
+        # Profiles: normalise, then merge any collisions the normalisation creates
+        survivors: dict[tuple, SubscriberProfile] = {}
+        for p in db.query(SubscriberProfile).all():
+            p.subscriber_number = normalise_msisdn(p.subscriber_number)
+            key = (p.org_id, p.subscriber_number)
+            if key in survivors:
+                _merge_profiles(survivors[key], p)
+                db.delete(p)
+            else:
+                survivors[key] = p
+
+        db.add(AuditLog(org_id="_system", action=_BACKFILL_MARKER,
+                        detail="canonical MSISDN + statement_iso backfill complete"))
+        db.commit()
+        logger.info("backfill: complete")
+    except Exception:
+        db.rollback()
+        logger.exception("backfill failed — will retry on next startup")
+    finally:
+        db.close()
+
+
+_migrate_schema()
+_backfill_once()
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="TelecomLens", version="3.1.0")
+app = FastAPI(title="TelecomLens", version="4.2.0")
 # CORS: wildcard is fine for a local single-machine tool.
 # Set CORS_ORIGINS=http://myserver:8000 in .env to restrict in production.
 _cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
@@ -341,6 +453,7 @@ def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpl
     bill = BillUpload(
         org_id=org_id, filename=filename, sha256=sha,
         statement_date=bill_data["statement_date"],
+        statement_iso=statement_to_iso(bill_data["statement_date"]),
         account_total=bill_data["account_total"],
         outstanding_total=bill_data.get("outstanding", 0),
         total_net=bill_data.get("total_net", 0),
@@ -350,6 +463,10 @@ def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpl
     )
     db.add(bill)
     db.flush()
+    # Canonicalise subscriber numbers up front so invoice lines, CDRs and
+    # profiles below all key off the same value across bills.
+    for inv in bill_data["invoices"]:
+        inv["subscriber_number"] = normalise_msisdn(inv.get("subscriber_number"))
     for inv in bill_data["invoices"]:
         existing = db.query(InvoiceLine).filter_by(invoice_number=inv["invoice_number"]).first()
         if existing:
@@ -400,10 +517,15 @@ def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpl
             )
             db.add(profile)
         else:
-            # Update last seen; mark active
+            # Update first/last seen by chronological (ISO) order, so imports
+            # in any order still yield a correct first-introduced date.
             sd = bill_data.get("statement_date", "")
-            if sd and sd > (profile.last_seen_date or ""):
+            sd_iso = statement_to_iso(sd)
+            if sd_iso and sd_iso > statement_to_iso(profile.last_seen_date or ""):
                 profile.last_seen_date = sd
+            if sd_iso and (not statement_to_iso(profile.first_seen_date)
+                           or sd_iso < statement_to_iso(profile.first_seen_date)):
+                profile.first_seen_date = sd
             profile.is_active = True
 
     db.commit()
@@ -472,7 +594,7 @@ def list_bills(org_id: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(BillUpload)
     if org_id:
         q = q.filter_by(org_id=org_id)
-    bills = q.order_by(BillUpload.statement_date.desc()).all()
+    bills = q.order_by(BillUpload.statement_iso.desc()).all()
     return [{"id": b.id, "org_id": b.org_id, "filename": b.filename,
              "statement_date": b.statement_date, "account_total": b.account_total,
              "outstanding_total": getattr(b, "outstanding_total", 0) or 0,
@@ -598,7 +720,7 @@ def bill_subscribers(bill_id: int, search: str = "", division: str = "",
 def subscriber_cdr(bill_id: int, sub_number: str, limit: int = 500,
                    db: Session = Depends(get_db)):
     rows = (db.query(CDRRecord)
-            .filter_by(bill_id=bill_id, subscriber_number=sub_number)
+            .filter_by(bill_id=bill_id, subscriber_number=normalise_msisdn(sub_number))
             .order_by(CDRRecord.date, CDRRecord.time)
             .limit(min(limit, 5000)).all())
     return [{
@@ -650,7 +772,7 @@ def bill_drilldown(bill_id: int,
     org_id = db.query(BillUpload.org_id).filter_by(id=bill_id).scalar()
     history = []
     if org_id and by == "division" and value:
-        bills = db.query(BillUpload).filter_by(org_id=org_id).order_by(BillUpload.statement_date).all()
+        bills = db.query(BillUpload).filter_by(org_id=org_id).order_by(BillUpload.statement_iso).all()
         for b in bills:
             amt = (db.query(func.sum(InvoiceLine.amount_due_kes))
                    .filter_by(bill_id=b.id, division=value).scalar() or 0)
@@ -704,7 +826,7 @@ def trends(org_id: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(BillUpload)
     if org_id:
         q = q.filter_by(org_id=org_id)
-    bills = q.order_by(BillUpload.statement_date).all()
+    bills = q.order_by(BillUpload.statement_iso).all()
     result = []
     for b in bills:
         lines = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
@@ -727,7 +849,7 @@ def top_spenders(org_id: Optional[str] = None, limit: int = 15, db: Session = De
     q_bills = db.query(BillUpload)
     if org_id:
         q_bills = q_bills.filter_by(org_id=org_id)
-    bills = q_bills.order_by(BillUpload.statement_date).all()
+    bills = q_bills.order_by(BillUpload.statement_iso).all()
     bill_map = {b.id: b.statement_date for b in bills}
     org_filter = InvoiceLine.org_id == org_id if org_id else True
     totals = (db.query(InvoiceLine.subscriber_number, InvoiceLine.raw_name, InvoiceLine.division,
@@ -811,7 +933,7 @@ def download_report(bill_id: int, db: Session = Depends(get_db)):
 
     # Multi-month trend from same org
     trend_bills = (db.query(BillUpload).filter_by(org_id=bill.org_id)
-                   .order_by(BillUpload.statement_date).all())
+                   .order_by(BillUpload.statement_iso).all())
     trends = []
     for b in trend_bills:
         b_lines = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
@@ -840,6 +962,7 @@ def download_report(bill_id: int, db: Session = Depends(get_db)):
         "anomalies":        anomalies,
         "top_subscribers":  top_subscribers,
         "trends":           trends,
+        "waste":            _compute_waste(bill.org_id, db),
     }
 
     try:
@@ -992,7 +1115,7 @@ def download_custom_report(bill_id: int, body: dict = Body(...), db: Session = D
     ]
 
     trend_bills = (db.query(BillUpload).filter_by(org_id=bill.org_id)
-                   .order_by(BillUpload.statement_date).all())
+                   .order_by(BillUpload.statement_iso).all())
     trends = []
     for b in trend_bills:
         bl = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
@@ -1017,6 +1140,7 @@ def download_custom_report(bill_id: int, body: dict = Body(...), db: Session = D
         "anomalies": anomalies if body.get("include_anomalies", True) else [],
         "top_subscribers": top_subscribers if body.get("include_subscribers", True) else [],
         "trends": trends if body.get("include_trends", True) else [],
+        "waste": _compute_waste(bill.org_id, db) if body.get("include_waste", True) else {},
         "options": {
             "include_summary": body.get("include_summary", True),
             "include_tax": body.get("include_tax", True),
@@ -1353,7 +1477,7 @@ def list_subscriber_profiles(
         # Exact match on number, partial match on name/display_name
         is_number = re.match(r"^\d{7,}$", search.strip())
         if is_number:
-            q = q.filter(SubscriberProfile.subscriber_number == search.strip())
+            q = q.filter(SubscriberProfile.subscriber_number == normalise_msisdn(search))
         else:
             # Also match against raw_name stored on any InvoiceLine for this subscriber
             matched_subs = (
@@ -1393,8 +1517,10 @@ def list_subscriber_profiles(
     for p in profiles:
         latest = (
             db.query(InvoiceLine)
-            .filter_by(org_id=org_id, subscriber_number=p.subscriber_number)
-            .order_by(InvoiceLine.bill_id.desc())
+            .join(BillUpload, InvoiceLine.bill_id == BillUpload.id)
+            .filter(InvoiceLine.org_id == org_id,
+                    InvoiceLine.subscriber_number == p.subscriber_number)
+            .order_by(BillUpload.statement_iso.desc())
             .first()
         )
         result.append({
@@ -1424,6 +1550,7 @@ def update_subscriber_profile(
     db: Session = Depends(get_db),
 ):
     """Update display_name, division_override, tags, device_type, notes, tariff_override."""
+    sub_number = normalise_msisdn(sub_number)
     profile = db.query(SubscriberProfile).filter_by(
         org_id=org_id, subscriber_number=sub_number
     ).first()
@@ -1452,6 +1579,287 @@ def update_subscriber_profile(
     return {"ok": True}
 
 
+# cost-change thresholds for derived spend events
+_SPIKE_PCT = 0.5            # ±50%
+_SPIKE_FLOOR_KES = 100.0    # ignore swings smaller than this in absolute terms
+
+
+def _msisdn_variants(canonical: str) -> set[str]:
+    """Formats a number may have been stored in before canonicalisation, so
+    ChangeLog rows written pre-normalisation still match the canonical key."""
+    v = {canonical}
+    if len(canonical) == 12 and canonical.startswith("254"):
+        v |= {"0" + canonical[3:], "+" + canonical, canonical[3:]}
+    return v
+
+
+@app.get("/api/orgs/{org_id}/subscribers/{sub_number}/history")
+def subscriber_history(org_id: str, sub_number: str, as_of: str = "",
+                       db: Session = Depends(get_db)):
+    """Full cross-bill history for one subscriber number: per-period billing
+    rows, derived lifecycle events (from presence-stable bill fields), and the
+    manual change/retag audit trail (from ChangeLog).
+
+    `as_of` (optional, 'YYYY-MM' or 'YYYY-MM-DD') pins the reference period:
+    only bills up to and including it are analysed, so a stray partial or
+    out-of-cycle bill imported for a later date does not flip status/lifecycle.
+    Defaults to the most recent bill."""
+    canonical = normalise_msisdn(sub_number)
+
+    all_bills = (db.query(BillUpload).filter_by(org_id=org_id)
+                 .order_by(BillUpload.statement_iso).all())
+    available_periods = [{"statement_date": b.statement_date,
+                          "statement_iso": b.statement_iso} for b in all_bills]
+
+    as_of = (as_of or "").strip()
+    if as_of:
+        if re.match(r"^\d{4}-\d{2}$", as_of):          # whole month, inclusive
+            bills = [b for b in all_bills if (b.statement_iso or "")[:7] <= as_of]
+        else:                                          # specific date, inclusive
+            bills = [b for b in all_bills if (b.statement_iso or "") <= as_of]
+    else:
+        bills = all_bills
+
+    # A number can carry more than one invoice line in a single bill — aggregate.
+    agg: dict[int, dict] = {}
+    for l in (db.query(InvoiceLine)
+              .filter_by(org_id=org_id, subscriber_number=canonical).all()):
+        a = agg.get(l.bill_id)
+        if a is None:
+            a = agg[l.bill_id] = {
+                "raw_name": l.raw_name or "", "division": l.division or "",
+                "tariff_plan": l.tariff_plan or "", "amount_due_kes": 0.0,
+                "pre_tax": 0.0, "vat": 0.0, "excise": 0.0, "cdr_count": 0,
+                "is_anomaly": False, "anomaly_reason": "", "_max_amt": -1.0,
+            }
+        a["amount_due_kes"] += l.amount_due_kes or 0
+        a["pre_tax"] += l.pre_tax or 0
+        a["vat"] += l.vat or 0
+        a["excise"] += l.excise or 0
+        a["cdr_count"] += l.cdr_count or 0
+        a["is_anomaly"] = a["is_anomaly"] or bool(l.is_anomaly)
+        if l.anomaly_reason and l.anomaly_reason not in a["anomaly_reason"]:
+            a["anomaly_reason"] = (a["anomaly_reason"] + "; " + l.anomaly_reason).strip("; ")
+        # representative name/division/tariff = the dominant (largest) line
+        if (l.amount_due_kes or 0) > a["_max_amt"]:
+            a["_max_amt"] = l.amount_due_kes or 0
+            a["raw_name"] = l.raw_name or a["raw_name"]
+            a["division"] = l.division or a["division"]
+            a["tariff_plan"] = l.tariff_plan or a["tariff_plan"]
+
+    # Chronological per-period timeline with running deltas
+    timeline = []
+    prev_amt = None
+    for b in bills:
+        if b.id not in agg:
+            continue
+        a = agg[b.id]
+        amt = round(a["amount_due_kes"], 2)
+        delta = None if prev_amt is None else round(amt - prev_amt, 2)
+        delta_pct = (round((amt - prev_amt) / abs(prev_amt) * 100, 1)
+                     if prev_amt not in (None, 0) else None)
+        timeline.append({
+            "bill_id": b.id, "statement_date": b.statement_date,
+            "statement_iso": b.statement_iso, "raw_name": a["raw_name"],
+            "division": a["division"], "tariff_plan": a["tariff_plan"],
+            "amount_due_kes": amt, "pre_tax": round(a["pre_tax"], 2),
+            "vat": round(a["vat"], 2), "excise": round(a["excise"], 2),
+            "cdr_count": a["cdr_count"], "is_anomaly": a["is_anomaly"],
+            "anomaly_reason": a["anomaly_reason"],
+            "delta_kes": delta, "delta_pct": delta_pct,
+        })
+        prev_amt = amt
+
+    # Derived lifecycle events — only from fields that are NOT retroactively
+    # rewritten (name, tariff, presence, amount). Division history deliberately
+    # comes from the ChangeLog audit trail below, not from diffing lines.
+    events = []
+    present = [i for i, b in enumerate(bills) if b.id in agg]
+    if present:
+        fb = bills[present[0]]
+        events.append({"type": "first_seen", "statement_date": fb.statement_date,
+                        "statement_iso": fb.statement_iso,
+                        "detail": f"First appeared in {fb.statement_date}"})
+        for ai, bi in zip(present, present[1:]):
+            pa, pb, cur = agg[bills[ai].id], agg[bills[bi].id], bills[bi]
+            if bi - ai > 1:
+                events.append({"type": "reactivated", "statement_date": cur.statement_date,
+                               "statement_iso": cur.statement_iso,
+                               "detail": f"Reappeared after absent from {bi - ai - 1} bill(s)"})
+            if pb["raw_name"] and pa["raw_name"] != pb["raw_name"]:
+                events.append({"type": "name_change", "statement_date": cur.statement_date,
+                               "statement_iso": cur.statement_iso,
+                               "from": pa["raw_name"], "to": pb["raw_name"],
+                               "detail": f"Name on bill changed: {pa['raw_name']} → {pb['raw_name']}"})
+            if pa["tariff_plan"] and pb["tariff_plan"] and pa["tariff_plan"] != pb["tariff_plan"]:
+                events.append({"type": "plan_change", "statement_date": cur.statement_date,
+                               "statement_iso": cur.statement_iso,
+                               "from": pa["tariff_plan"], "to": pb["tariff_plan"],
+                               "detail": f"Tariff changed: {pa['tariff_plan']} → {pb['tariff_plan']}"})
+            pamt, camt = round(pa["amount_due_kes"], 2), round(pb["amount_due_kes"], 2)
+            if pamt > 0 and abs(camt - pamt) >= _SPIKE_FLOOR_KES:
+                pct = (camt - pamt) / pamt
+                if pct >= _SPIKE_PCT:
+                    events.append({"type": "cost_spike", "statement_date": cur.statement_date,
+                                   "statement_iso": cur.statement_iso, "from": pamt, "to": camt,
+                                   "detail": f"Spend rose {round(pct*100)}% ({pamt:,.0f} → {camt:,.0f} KES)"})
+                elif pct <= -_SPIKE_PCT:
+                    events.append({"type": "cost_drop", "statement_date": cur.statement_date,
+                                   "statement_iso": cur.statement_iso, "from": pamt, "to": camt,
+                                   "detail": f"Spend fell {round(abs(pct)*100)}% ({pamt:,.0f} → {camt:,.0f} KES)"})
+        last_i = present[-1]
+        if last_i < len(bills) - 1:
+            gb = bills[last_i + 1]
+            events.append({"type": "gone", "statement_date": gb.statement_date,
+                           "statement_iso": gb.statement_iso,
+                           "detail": f"Absent from {gb.statement_date} onward "
+                                     f"(last seen {bills[last_i].statement_date})"})
+    events.sort(key=lambda e: e.get("statement_iso") or "", reverse=True)
+
+    # Status from presence in the most recent bill
+    status = "unknown"
+    if present:
+        last_bill = bills[-1]
+        if last_bill.id in agg:
+            r = agg[last_bill.id]
+            status = "dormant" if (round(r["amount_due_kes"], 2) == 0
+                                   and r["cdr_count"] == 0) else "active"
+        else:
+            status = "gone"
+
+    profile = db.query(SubscriberProfile).filter_by(
+        org_id=org_id, subscriber_number=canonical).first()
+
+    lifetime = round(sum(t["amount_due_kes"] for t in timeline), 2)
+    months = len(timeline)
+    cur_row = timeline[-1] if timeline else None
+    cur_div = ((profile.division_override if profile and profile.division_override else "")
+               or (cur_row["division"] if cur_row else ""))
+    cur_name = ((profile.display_name if profile and profile.display_name else "")
+                or (cur_row["raw_name"] if cur_row else ""))
+
+    # Manual change / retag audit trail (matches pre-normalisation formats too)
+    changes = [{
+        "id": c.id, "entity_type": c.entity_type, "field": c.field,
+        "prev_value": c.prev_value, "new_value": c.new_value, "actor": c.actor,
+        "note": c.note, "created_at": str(c.created_at)[:19], "rolled_back": c.rolled_back,
+    } for c in (db.query(ChangeLog)
+                .filter(ChangeLog.org_id == org_id,
+                        ChangeLog.entity_id.in_(_msisdn_variants(canonical)))
+                .order_by(ChangeLog.created_at.desc()).limit(200).all())]
+
+    return {
+        "subscriber_number": canonical,
+        "display_number": display_msisdn(canonical),
+        "found": bool(timeline or profile),
+        "as_of": as_of or (bills[-1].statement_iso if bills else ""),
+        "available_periods": available_periods,
+        "profile": None if not profile else {
+            "display_name": profile.display_name,
+            "division_override": profile.division_override, "tags": profile.tags,
+            "device_type": profile.device_type, "tariff_override": profile.tariff_override,
+            "notes": profile.notes, "is_active": profile.is_active,
+            "first_seen_date": profile.first_seen_date, "last_seen_date": profile.last_seen_date,
+        },
+        "summary": {
+            "status": status, "bills_present": months, "bills_total": len(bills),
+            "first_seen": timeline[0]["statement_date"] if timeline
+                          else (profile.first_seen_date if profile else ""),
+            "last_seen": timeline[-1]["statement_date"] if timeline
+                         else (profile.last_seen_date if profile else ""),
+            "lifetime_spend": lifetime,
+            "avg_monthly": round(lifetime / months, 2) if months else 0,
+            "current_division": cur_div, "current_name": cur_name,
+        },
+        "timeline": timeline,
+        "events": events,
+        "changes": changes,
+    }
+
+
+def _bill_number_agg(bill_id: int, org_id: str, db: Session) -> dict:
+    """Aggregate invoice lines for one bill into {number: {raw_name, division,
+    amount_kes, cdr_count}} with the dominant line's name/division."""
+    out: dict[str, dict] = {}
+    for l in db.query(InvoiceLine).filter_by(org_id=org_id, bill_id=bill_id).all():
+        a = out.get(l.subscriber_number)
+        if a is None:
+            a = out[l.subscriber_number] = {"raw_name": l.raw_name or "",
+                "division": l.division or "", "amount_kes": 0.0,
+                "cdr_count": 0, "_max": -1.0}
+        a["amount_kes"] += l.amount_due_kes or 0
+        a["cdr_count"] += l.cdr_count or 0
+        if (l.amount_due_kes or 0) > a["_max"]:
+            a["_max"] = l.amount_due_kes or 0
+            a["raw_name"] = l.raw_name or a["raw_name"]
+            a["division"] = l.division or a["division"]
+    return out
+
+
+def _compute_waste(org_id: str, db: Session) -> dict:
+    """Shared waste/insight computation (reused by the endpoint and the report)."""
+    bills = (db.query(BillUpload).filter_by(org_id=org_id)
+             .order_by(BillUpload.statement_iso).all())
+    if not bills:
+        return {"bills_loaded": 0, "reference_period": None, "prev_period": None,
+                "dormant_billed": [], "top_increases": [], "deactivated": [], "summary": {}}
+    latest = bills[-1]
+    prev = bills[-2] if len(bills) > 1 else None
+    cur = _bill_number_agg(latest.id, org_id, db)
+    pre = _bill_number_agg(prev.id, org_id, db) if prev else {}
+
+    dormant_billed = sorted(
+        [{"subscriber_number": n, "display_number": display_msisdn(n),
+          "raw_name": a["raw_name"], "division": a["division"],
+          "amount_kes": round(a["amount_kes"], 2)}
+         for n, a in cur.items()
+         if round(a["amount_kes"], 2) > 0 and a["cdr_count"] == 0],
+        key=lambda x: x["amount_kes"], reverse=True)[:100]
+
+    increases = []
+    for n, a in cur.items():
+        if n in pre:
+            d = round(a["amount_kes"] - pre[n]["amount_kes"], 2)
+            if d > 0:
+                pct = round(d / pre[n]["amount_kes"] * 100, 1) if pre[n]["amount_kes"] else None
+                increases.append({"subscriber_number": n, "display_number": display_msisdn(n),
+                    "raw_name": a["raw_name"], "division": a["division"],
+                    "prev_kes": round(pre[n]["amount_kes"], 2),
+                    "curr_kes": round(a["amount_kes"], 2), "delta_kes": d, "delta_pct": pct})
+    increases.sort(key=lambda x: x["delta_kes"], reverse=True)
+
+    deactivated = sorted(
+        [{"subscriber_number": n, "display_number": display_msisdn(n),
+          "raw_name": a["raw_name"], "division": a["division"],
+          "last_amount_kes": round(a["amount_kes"], 2)}
+         for n, a in pre.items() if n not in cur],
+        key=lambda x: x["last_amount_kes"], reverse=True)[:100]
+
+    return {
+        "bills_loaded": len(bills),
+        "reference_period": latest.statement_date,
+        "prev_period": prev.statement_date if prev else None,
+        "dormant_billed": dormant_billed,
+        "top_increases": increases[:25],
+        "deactivated": deactivated,
+        "summary": {
+            "dormant_billed_count": len(dormant_billed),
+            "dormant_billed_kes": round(sum(x["amount_kes"] for x in dormant_billed), 2),
+            "deactivated_count": len(deactivated),
+            "increase_count": len(increases),
+            "total_increase_kes": round(sum(x["delta_kes"] for x in increases), 2),
+        },
+    }
+
+
+@app.get("/api/orgs/{org_id}/waste")
+def waste_insights(org_id: str, db: Session = Depends(get_db)):
+    """Cost-saving signals as of the latest bill: lines billed but unused
+    (dormant-but-billed), biggest month-over-month increases, and lines that
+    dropped off (possible deactivations)."""
+    return _compute_waste(org_id, db)
+
+
 @app.get("/api/orgs/{org_id}/tags")
 def list_tags(org_id: str, db: Session = Depends(get_db)):
     """Return all unique tags in use across subscribers for this org."""
@@ -1477,7 +1885,7 @@ def subscriber_lifecycle(org_id: str, db: Session = Depends(get_db)):
     bills = (
         db.query(BillUpload)
         .filter_by(org_id=org_id)
-        .order_by(BillUpload.statement_date)
+        .order_by(BillUpload.statement_iso)
         .all()
     )
     if len(bills) < 2:
@@ -1648,7 +2056,7 @@ def budget_vs_actual(org_id: str, db: Session = Depends(get_db)):
     bills = (
         db.query(BillUpload)
         .filter_by(org_id=org_id)
-        .order_by(BillUpload.statement_date)
+        .order_by(BillUpload.statement_iso)
         .all()
     )
     budgets = db.query(BudgetEntry).filter_by(org_id=org_id).all()
@@ -1723,7 +2131,7 @@ def spend_forecast(org_id: str, months_ahead: int = 3, db: Session = Depends(get
     bills = (
         db.query(BillUpload)
         .filter_by(org_id=org_id)
-        .order_by(BillUpload.statement_date)
+        .order_by(BillUpload.statement_iso)
         .all()
     )
     if len(bills) < 2:
@@ -1830,7 +2238,7 @@ def alert_breaches(org_id: str, db: Session = Depends(get_db)):
     latest_bill = (
         db.query(BillUpload)
         .filter_by(org_id=org_id)
-        .order_by(BillUpload.statement_date.desc())
+        .order_by(BillUpload.statement_iso.desc())
         .first()
     )
     if not latest_bill:
@@ -2007,7 +2415,7 @@ def bulk_retag(
         safe = search.replace("%", r"\%").replace("_", r"\_")
         is_number = re.match(r"^\d{7,}$", search.strip())
         if is_number:
-            q = q.filter(InvoiceLine.subscriber_number == search.strip())
+            q = q.filter(InvoiceLine.subscriber_number == normalise_msisdn(search))
         else:
             q = q.filter(
                 InvoiceLine.raw_name.ilike(f"%{safe}%")
@@ -2257,7 +2665,7 @@ def retag_preview(
         safe = search.replace("%", r"\%").replace("_", r"\_")
         is_number = re.match(r"^\d{7,}$", search.strip())
         if is_number:
-            q = q.filter(InvoiceLine.subscriber_number == search.strip())
+            q = q.filter(InvoiceLine.subscriber_number == normalise_msisdn(search))
         else:
             q = q.filter(
                 InvoiceLine.raw_name.ilike(f"%{safe}%")

@@ -4,6 +4,14 @@
 
 ---
 
+## What's new in v4.2
+
+- **Per-number history** — click any subscriber (in the Registry, Lifecycle, Waste, or a bill drill-down) to open a cross-bill profile: spend-over-time chart, a derived activity feed (first seen, name/plan changes, cost spikes/drops, dormancy, reactivation, deactivation), the full manual-change audit with one-click **Undo**, and a per-period table. Pin any past period with the **As of** selector
+- **Waste insights** — a new **Subscribers → Waste** subtab (and report section) surfacing lines billed without any usage, the biggest month-on-month increases, and lines that dropped off — the numbers most worth a second look
+- **Canonical phone-number matching** — `0722…`, `254722…` and `+254 722…` are now treated as one line everywhere, so a number's history is never split by formatting differences. Existing databases are upgraded automatically on first launch
+- **Correct chronology** — bills now sort by a proper date key; fixes subtle mis-ordering that affected lifecycle detection, trend sparklines, and the forecast when bills spanned multiple months
+- **Reliable Windows line endings** — `.gitattributes` enforces CRLF on `.bat` and LF on `.sh`
+
 ## What's new in v4.1
 
 - **Smart org detection** — all tabs (Subscribers, Divisions, Analytics, Settings) auto-detect the organisation from imported bills; no more "Import a bill first" screens when data already exists
@@ -31,7 +39,7 @@
 |-----|-------------|
 | **Overview** | KPI tiles (spend, outstanding, subscribers, anomalies), division donut + charge components charts, division detail table, anomaly register |
 | **Finance** | Pre-tax / excise / VAT reconciliation with expected vs actual, chargeback register, one-click CSV / Excel / .docx export |
-| **Subscribers** | Registry (search, filter by division/tag), lifecycle events (activations, deactivations, plan changes), tag manager |
+| **Subscribers** | Registry (search, filter by division/tag), per-number cross-bill history with activity feed and rollback, lifecycle events (activations, deactivations, plan changes), waste insights (billed-but-unused, top movers, drop-offs), tag manager |
 | **Divisions** | Division Manager (create/rename/recolour), Bulk Retag tool, Change Log with individual and bulk rollback |
 | **Analytics** | Spend trend, budget vs actual, 3-month forecast with confidence bands, spend alerts, cost-per-head benchmarks |
 | **Settings** | Custom report builder (.docx), Excel chargeback pack, annotations, webhooks, audit trail, carrier detection |
@@ -147,6 +155,8 @@ Key endpoints:
 | `POST /api/bills/upload` | Import a PDF bill |
 | `GET /api/bills/{id}/summary` | Bill totals (spend, taxes, outstanding) |
 | `GET /api/bills/{id}/drilldown` | Line items for any field/value |
+| `GET /api/orgs/{id}/subscribers/{num}/history` | Cross-bill history for one number (optional `as_of`) |
+| `GET /api/orgs/{id}/waste` | Billed-but-unused, top increases, drop-offs |
 | `POST /api/orgs/{id}/retag` | Bulk-reassign divisions |
 | `GET /api/orgs/{id}/changes` | Change log |
 | `POST /api/orgs/{id}/changes/{id}/rollback` | Undo a single change |
@@ -164,14 +174,17 @@ Key endpoints:
 
 ```
 telecomlens/
-├── main.py              FastAPI app — all DB models (11), endpoints (44+)
+├── main.py              FastAPI app — all DB models, endpoints, migration + backfill
 ├── parser.py            PDF → structured invoice data (calibrated to real bills)
-├── discover.py          Subscriber name classification helpers
+├── discover.py          Subscriber name classification helpers (ReDoS-guarded)
+├── msisdn.py            Canonical Kenyan/Safaricom number normalisation
 ├── report.py            .docx report generator (python-docx)
 ├── requirements.txt     Python dependencies
+├── .gitattributes       Enforces CRLF on .bat, LF on .sh/source
 ├── install.bat / .sh    One-shot installer (Windows / Linux+macOS)
 ├── start.bat / .sh      Server launcher
 ├── bills/               Drop PDFs here for batch import
+├── tests/               Unit + integration tests
 └── static/
     └── index.html       Single-file SPA dashboard (~100 KB)
 ```
@@ -193,8 +206,12 @@ telecomlens/
 
 See `CONTRIBUTING.md`. Quick checklist before a PR:
 ```bash
-python3 -m py_compile main.py parser.py discover.py report.py
+python3 -m py_compile main.py parser.py discover.py msisdn.py report.py
 node --check static/index.html  # or extract the <script> block
+python tests/test_msisdn.py     # unit tests
+python tests/test_backfill.py   # migration + backfill
+python tests/test_history.py    # history endpoint
+python tests/test_insights.py   # as_of, waste, rollback, report
 ```
 
 ---

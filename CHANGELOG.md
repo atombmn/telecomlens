@@ -4,6 +4,33 @@ All notable changes to TelecomLens are documented here.
 
 ---
 
+## v4.2.0 — 2026-06-20
+
+### Added
+- **Canonical MSISDN normalisation (`msisdn.py`)** — a dependency-free module that collapses every Safaricom/Kenyan number format (`0722…`, `254722…`, `+254 722…`, double-prefixed exports) to one canonical `2547XXXXXXXX` key, with a conservative pass-through for non-mobile identifiers (fixed lines, data SIMs, foreign numbers). Idempotent; covered by `tests/test_msisdn.py` (17 format cases + idempotency + display round-trip)
+- **Sortable statement date (`statement_iso`)** — a new indexed `YYYY-MM-DD` column on `BillUpload`, derived from the parsed `dd/mm/yyyy`, so all ordering is chronological rather than lexicographic
+- **Subscriber history** — `GET /api/orgs/{org_id}/subscribers/{sub_number}/history` returns a number's full cross-bill story: per-period billing rows with deltas, derived lifecycle events (first-seen, name/plan change, cost spike/drop, dormancy gap, reactivation, gone), and the manual change/retag audit trail. Surfaced as a slide-in panel opened from any Registry, Lifecycle, Waste, or bill drill-down row
+- **`as_of` period guard** — the history endpoint accepts `as_of` (`YYYY-MM` or `YYYY-MM-DD`) to pin the reference period, so a stray partial or out-of-cycle bill can't flip status/lifecycle; exposed as an "As of period" selector in the panel
+- **Waste / cost-saving insights** — `GET /api/orgs/{org_id}/waste` and a new **Waste** subtab surfacing billed-but-unused lines (charge > 0, zero CDRs), largest month-on-month increases, and lines that dropped off (possible deactivations); every row deep-links to the history panel
+- **Rollback from the profile view** — manual changes in the history panel each have an Undo button wired to the existing rollback endpoint
+- **Report section** — the `.docx` executive report now includes a "Subscriber Lifecycle & Waste" section (built from the same `_compute_waste` logic, so report and UI never diverge); Recommendations renumbered to §8
+- **`.gitattributes`** — enforces CRLF on `*.bat` and LF on `*.sh`/source so line endings can't regress across contributor OSes
+- **`tests/`** — portable integration tests for the migration/backfill, history endpoint, and as_of/waste/rollback/report
+
+### Fixed
+- **Chronology bug** — every `ORDER BY statement_date` was a lexicographic sort on `dd/mm/yyyy` (so 15 Jan sorted after 03 Feb). Switched all ten sites to `statement_iso`. This was silently affecting the lifecycle endpoint's "consecutive bill" comparison, trend sparklines, and the forecast series
+- **First-seen on out-of-order imports** — `SubscriberProfile.first_seen_date`/`last_seen_date` now update by ISO comparison and correctly track the earliest period even when bills are imported out of order
+- **"Latest line" lookup** — the subscriber registry's latest-amount lookup now orders by statement date instead of insert order
+- **Stale version string** — `FastAPI(version=…)` corrected from `3.1.0` to match the release
+- **`start.bat` / `stop.bat`** — converted to CRLF (were LF, which can break `cmd.exe`)
+- **Restored `GET /api/orgs/{org_id}/tags` route** — a decorator was inadvertently dropped while adding the history endpoint; caught and fixed during the release audit
+
+### Changed
+- **Numbers are canonicalised at the persistence boundary** — `store_bill` normalises every subscriber number before writing invoice lines, CDRs, and profiles; exact-match search (registry, retag, retag-preview), the profile PATCH, and the CDR endpoint normalise the query term
+- **One-time migration + backfill at startup** — idempotent, SQLite-friendly: adds the `statement_iso` column to existing tables, backfills it, canonicalises all stored MSISDNs, and merges any duplicate profiles the normalisation collapses. Guarded by an `AuditLog` marker so it runs once then no-ops; crash-safe
+
+---
+
 ## v4.1.0 — 2026-05-22
 
 ### Fixed

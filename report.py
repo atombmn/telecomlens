@@ -123,6 +123,11 @@ def _kes(n) -> str:
         return "—"
 
 
+def _clip(text, n: int = 34) -> str:
+    t = str(text or "")
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
 def generate_report(data: dict) -> bytes:
     """
     Generate a professional executive .docx report from bill data.
@@ -319,9 +324,61 @@ def generate_report(data: dict) -> bytes:
                       widths_tr, shade=(i % 2 == 0))
 
     # ════════════════════════════════════════════════════════════════════════
-    # 7. RECOMMENDATIONS
+    # 7. SUBSCRIBER LIFECYCLE & WASTE
     # ════════════════════════════════════════════════════════════════════════
-    _section_heading(doc, "7.", "Recommendations")
+    waste = data.get("waste") or {}
+    if waste.get("dormant_billed") or waste.get("deactivated") or waste.get("top_increases"):
+        _section_heading(doc, "7.", "Subscriber Lifecycle & Waste")
+        wsum = waste.get("summary", {})
+        ref = waste.get("reference_period") or stmt_date
+        _add_para(doc,
+            f"As of {ref}: {wsum.get('dormant_billed_count', 0)} line(s) billed without any "
+            f"usage ({_kes(wsum.get('dormant_billed_kes', 0))} of potentially recoverable "
+            f"spend); {wsum.get('deactivated_count', 0)} line(s) dropped off versus "
+            f"{waste.get('prev_period') or 'the prior bill'}.",
+            size=10, space_after=6)
+
+        dorm = waste.get("dormant_billed", [])[:12]
+        if dorm:
+            _add_para(doc, "Billed but unused (dormant)", bold=True, size=10,
+                      space_before=4, space_after=3)
+            wcols = [4.0, 6.5, 4.0, 3.0]
+            td = doc.add_table(rows=1, cols=4); td.style = "Table Grid"
+            _header_row(td, ["Number", "Name", "Division", "KES"], wcols)
+            for i, r in enumerate(dorm):
+                _data_row(td, [r.get("display_number", ""), _clip(r.get("raw_name", "")),
+                               r.get("division", ""), f"{r.get('amount_kes', 0):,.0f}"],
+                          wcols, shade=(i % 2 == 0))
+
+        inc = waste.get("top_increases", [])[:10]
+        if inc:
+            _add_para(doc, "Largest month-on-month increases", bold=True, size=10,
+                      space_before=8, space_after=3)
+            wcols = [3.6, 5.4, 2.9, 2.8, 2.8]
+            ti = doc.add_table(rows=1, cols=5); ti.style = "Table Grid"
+            _header_row(ti, ["Number", "Name", "Prev", "Now", "Change"], wcols)
+            for i, r in enumerate(inc):
+                _data_row(ti, [r.get("display_number", ""), _clip(r.get("raw_name", "")),
+                               f"{r.get('prev_kes', 0):,.0f}", f"{r.get('curr_kes', 0):,.0f}",
+                               f"+{r.get('delta_kes', 0):,.0f}"],
+                          wcols, shade=(i % 2 == 0), red_last=True)
+
+        deact = waste.get("deactivated", [])[:10]
+        if deact:
+            _add_para(doc, "Dropped off (possible deactivations)", bold=True, size=10,
+                      space_before=8, space_after=3)
+            wcols = [4.0, 6.5, 4.0, 3.0]
+            tx = doc.add_table(rows=1, cols=4); tx.style = "Table Grid"
+            _header_row(tx, ["Number", "Name", "Division", "Last KES"], wcols)
+            for i, r in enumerate(deact):
+                _data_row(tx, [r.get("display_number", ""), _clip(r.get("raw_name", "")),
+                               r.get("division", ""), f"{r.get('last_amount_kes', 0):,.0f}"],
+                          wcols, shade=(i % 2 == 0))
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 8. RECOMMENDATIONS
+    # ════════════════════════════════════════════════════════════════════════
+    _section_heading(doc, "8.", "Recommendations")
     recs = []
     if s.get("anomaly_count", 0) > 0:
         recs.append(f"Review {s['anomaly_count']} flagged line(s) — investigate high-spend and unclassified subscribers.")
