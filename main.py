@@ -2712,6 +2712,10 @@ def retag_preview(
 @app.get("/", response_class=HTMLResponse)
 def serve_dashboard():
     index = STATIC_DIR / "index.html"
+    # Never cache the SPA shell, so updates take effect on the next load without
+    # a manual hard-refresh.
+    no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache", "Expires": "0"}
     if index.exists():
-        return index.read_text(encoding="utf-8")
+        return HTMLResponse(index.read_text(encoding="utf-8"), headers=no_cache)
     return HTMLResponse("<h2>TelecomLens API ✓</h2><p><a href='/docs'>API docs</a></p>")
