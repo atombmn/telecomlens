@@ -69,6 +69,24 @@ def statement_to_iso(raw: str) -> str:
     return ""
 
 
+def _significant_digits(search: str):
+    """Return the national significant digits of a phone-number-like search
+    term, or None if it is not numeric. Canonical numbers are stored as
+    254+national, so matching on these digits via ILIKE works for any input
+    format (07…, 254…, +254…, spaced/hyphenated) and for partial fragments."""
+    raw = (search or "").strip()
+    if not raw or not re.fullmatch(r"[\d\s\-\+\(\)\.]+", raw):
+        return None
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) < 3:
+        return None
+    if digits.startswith("254") and len(digits) > 3:
+        return digits[3:]
+    if digits.startswith("0") and len(digits) > 1:
+        return digits[1:]
+    return digits
+
+
 class Base(DeclarativeBase): pass
 
 class Organisation(Base):
@@ -1474,10 +1492,11 @@ def list_subscriber_profiles(
     q = db.query(SubscriberProfile).filter_by(org_id=org_id)
     if search:
         safe = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        # Exact match on number, partial match on name/display_name
-        is_number = re.match(r"^\d{7,}$", search.strip())
-        if is_number:
-            q = q.filter(SubscriberProfile.subscriber_number == normalise_msisdn(search))
+        sig = _significant_digits(search)
+        if sig:
+            # Phone search: match canonical numbers by national significant digits,
+            # so 07…, 254…, +254…, spaced, and partial inputs all resolve.
+            q = q.filter(SubscriberProfile.subscriber_number.ilike(f"%{sig}%"))
         else:
             # Also match against raw_name stored on any InvoiceLine for this subscriber
             matched_subs = (
@@ -1525,6 +1544,7 @@ def list_subscriber_profiles(
         )
         result.append({
             "subscriber_number": p.subscriber_number,
+            "display_number": display_msisdn(p.subscriber_number),
             "display_name": p.display_name,
             "division_override": p.division_override,
             "division": p.division_override or (latest.division if latest else ""),
@@ -2413,9 +2433,9 @@ def bulk_retag(
         q = q.filter(InvoiceLine.subscriber_number.in_(explicit))
     if search:
         safe = search.replace("%", r"\%").replace("_", r"\_")
-        is_number = re.match(r"^\d{7,}$", search.strip())
-        if is_number:
-            q = q.filter(InvoiceLine.subscriber_number == normalise_msisdn(search))
+        sig = _significant_digits(search)
+        if sig:
+            q = q.filter(InvoiceLine.subscriber_number.ilike(f"%{sig}%"))
         else:
             q = q.filter(
                 InvoiceLine.raw_name.ilike(f"%{safe}%")
@@ -2663,9 +2683,9 @@ def retag_preview(
         q = q.filter_by(division=from_division)
     if search:
         safe = search.replace("%", r"\%").replace("_", r"\_")
-        is_number = re.match(r"^\d{7,}$", search.strip())
-        if is_number:
-            q = q.filter(InvoiceLine.subscriber_number == normalise_msisdn(search))
+        sig = _significant_digits(search)
+        if sig:
+            q = q.filter(InvoiceLine.subscriber_number.ilike(f"%{sig}%"))
         else:
             q = q.filter(
                 InvoiceLine.raw_name.ilike(f"%{safe}%")

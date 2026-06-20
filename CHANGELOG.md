@@ -26,6 +26,7 @@ All notable changes to TelecomLens are documented here.
 - **Restored `GET /api/orgs/{org_id}/tags` route** — a decorator was inadvertently dropped while adding the history endpoint; caught and fixed during the release audit
 
 ### Changed
+- **Phone-number search is format-agnostic** — subscriber and retag searches now match canonical numbers by their national significant digits, so `07…`, `254…`, `+254…`, spaced/hyphenated input, and partial fragments all resolve to the right line. The Registry also displays numbers in the friendly `0…` form
 - **Numbers are canonicalised at the persistence boundary** — `store_bill` normalises every subscriber number before writing invoice lines, CDRs, and profiles; exact-match search (registry, retag, retag-preview), the profile PATCH, and the CDR endpoint normalise the query term
 - **One-time migration + backfill at startup** — idempotent, SQLite-friendly: adds the `statement_iso` column to existing tables, backfills it, canonicalises all stored MSISDNs, and merges any duplicate profiles the normalisation collapses. Guarded by an `AuditLog` marker so it runs once then no-ops; crash-safe
 
