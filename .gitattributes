@@ -1,0 +1,19 @@
+# Enforce consistent line endings regardless of contributor OS.
+# Windows batch files must be CRLF or cmd.exe mis-parses multi-line blocks.
+*.bat   text eol=crlf
+# Shell scripts must be LF or bash fails with "\r: command not found".
+*.sh    text eol=lf
+
+# Normalise everything else to LF in the repo.
+*.py    text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+
+# Treat binaries as binary (no EOL conversion).
+*.pdf   binary
+*.png   binary
+*.xlsx  binary
+*.docx  binary
+*.db    binary
