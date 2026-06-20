@@ -18,6 +18,7 @@ All notable changes to TelecomLens are documented here.
 - **`tests/`** — portable integration tests for the migration/backfill, history endpoint, and as_of/waste/rollback/report
 
 ### Fixed
+- **Active-org default with multiple organisations** — when a database holds more than one org (e.g. a main account plus a CUG-sponsor account), the dashboard previously fell back to an arbitrary first bill, which could land on an org with no profiled subscribers and show an empty Subscribers tab. `/api/orgs` now reports each org's subscriber and bill counts, and the dashboard defaults to the org with the most subscribers (and shows counts in the org dropdown)
 - **Chronology bug** — every `ORDER BY statement_date` was a lexicographic sort on `dd/mm/yyyy` (so 15 Jan sorted after 03 Feb). Switched all ten sites to `statement_iso`. This was silently affecting the lifecycle endpoint's "consecutive bill" comparison, trend sparklines, and the forecast series
 - **First-seen on out-of-order imports** — `SubscriberProfile.first_seen_date`/`last_seen_date` now update by ISO comparison and correctly track the earliest period even when bills are imported out of order
 - **"Latest line" lookup** — the subscriber registry's latest-amount lookup now orders by statement date instead of insert order

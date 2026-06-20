@@ -604,7 +604,15 @@ def health():
 @app.get("/api/orgs")
 def list_orgs(db: Session = Depends(get_db)):
     orgs = db.query(Organisation).all()
-    return [{"id": o.id, "name": o.name, "account_number": o.account_number} for o in orgs]
+    out = [{
+        "id": o.id, "name": o.name, "account_number": o.account_number,
+        "subscriber_count": db.query(SubscriberProfile).filter_by(org_id=o.id).count(),
+        "bill_count": db.query(BillUpload).filter_by(org_id=o.id).count(),
+    } for o in orgs]
+    # Most-populated org first, so the dashboard can default to the org that
+    # actually has subscribers rather than an arbitrary first bill.
+    out.sort(key=lambda x: x["subscriber_count"], reverse=True)
+    return out
 
 
 @app.get("/api/bills")
