@@ -184,8 +184,8 @@ const S={activeOrgId:null,activeBillId:null,activeTab:'overview',summary:null,di
 const _drillCache=new Map();let _drillCacheKey=0,_drillSpark=null;
 
 // LABELS
-const DEFAULT_LABELS={'tab.overview':'Overview','tab.finance':'Finance','tab.subscribers':'Subscribers','tab.divisions':'Divisions','tab.analytics':'Analytics','tab.settings':'Settings','kpi.total_spend':'Total Spend','kpi.subscribers':'Subscribers','kpi.anomalies':'Anomalies','kpi.outstanding':'Outstanding','kpi.pre_tax':'Pre-Tax Total','kpi.excise':'Excise Duty','kpi.vat':'VAT','sec.division_breakdown':'Spend by Division','sec.charge_components':'Charge Components','sec.tax_recon':'Tax Reconciliation','sec.chargeback':'Chargeback Register','sec.anomalies':'Anomaly Tracker','sec.trend':'Spend Trend','sec.budget_vs_actual':'Budget vs Actual','sec.forecast':'Forecast','sec.alerts':'Spend Alerts','sec.benchmarks':'Cost-per-Head','sec.export':'Export','sec.annotations':'Annotations','sec.audit':'Audit Trail','sec.webhooks':'Webhooks','sec.div_manager':'Division Manager','sec.retag':'Bulk Retag','sec.changes':'Change Log'};
-const LABEL_GROUPS=[{g:'Tabs',keys:['tab.overview','tab.finance','tab.subscribers','tab.divisions','tab.analytics','tab.settings']},{g:'KPI Cards',keys:['kpi.total_spend','kpi.subscribers','kpi.anomalies','kpi.outstanding','kpi.pre_tax','kpi.excise','kpi.vat']},{g:'Section Headings',keys:['sec.division_breakdown','sec.charge_components','sec.tax_recon','sec.chargeback','sec.anomalies','sec.trend','sec.budget_vs_actual','sec.forecast','sec.alerts','sec.benchmarks','sec.export','sec.annotations','sec.audit','sec.webhooks','sec.div_manager','sec.retag','sec.changes']}];
+const DEFAULT_LABELS={'tab.overview':'Overview','tab.finance':'Finance','tab.subscribers':'Subscribers','tab.trace':'Trace','tab.divisions':'Divisions','tab.analytics':'Analytics','tab.settings':'Settings','kpi.total_spend':'Total Spend','kpi.subscribers':'Subscribers','kpi.anomalies':'Anomalies','kpi.outstanding':'Outstanding','kpi.pre_tax':'Pre-Tax Total','kpi.excise':'Excise Duty','kpi.vat':'VAT','sec.division_breakdown':'Spend by Division','sec.charge_components':'Charge Components','sec.tax_recon':'Tax Reconciliation','sec.chargeback':'Chargeback Register','sec.anomalies':'Anomaly Tracker','sec.trend':'Spend Trend','sec.budget_vs_actual':'Budget vs Actual','sec.forecast':'Forecast','sec.alerts':'Spend Alerts','sec.benchmarks':'Cost-per-Head','sec.export':'Export','sec.annotations':'Annotations','sec.audit':'Audit Trail','sec.webhooks':'Webhooks','sec.div_manager':'Division Manager','sec.retag':'Bulk Retag','sec.changes':'Change Log'};
+const LABEL_GROUPS=[{g:'Tabs',keys:['tab.overview','tab.finance','tab.subscribers','tab.trace','tab.divisions','tab.analytics','tab.settings']},{g:'KPI Cards',keys:['kpi.total_spend','kpi.subscribers','kpi.anomalies','kpi.outstanding','kpi.pre_tax','kpi.excise','kpi.vat']},{g:'Section Headings',keys:['sec.division_breakdown','sec.charge_components','sec.tax_recon','sec.chargeback','sec.anomalies','sec.trend','sec.budget_vs_actual','sec.forecast','sec.alerts','sec.benchmarks','sec.export','sec.annotations','sec.audit','sec.webhooks','sec.div_manager','sec.retag','sec.changes']}];
 function loadLabels(){try{return{...DEFAULT_LABELS,...JSON.parse(localStorage.getItem('tl_labels')||'{}')};}catch{return{...DEFAULT_LABELS};}}
 function lbl(k){return loadLabels()[k]||DEFAULT_LABELS[k]||k;}
 function openSettings(){const labels=loadLabels();document.getElementById('settings-body').innerHTML=LABEL_GROUPS.map(g=>`<div class="sd-section"><div class="sd-section-title">${g.g}</div>${g.keys.map(k=>`<div class="sd-row"><label>${DEFAULT_LABELS[k]}</label><input data-key="${k}" value="${escH(labels[k]||DEFAULT_LABELS[k])}"></div>`).join('')}</div>`).join('');document.getElementById('settings-overlay').classList.add('open');document.getElementById('settings-drawer').classList.add('open');}
@@ -217,7 +217,7 @@ async function onBillChange(billId){S.activeBillId=billId?parseInt(billId):null;
 function switchTab(tab){if(tab!==S.activeTab)closeDrill();S.activeTab=tab;renderTabs();renderTab(tab);}
 
 // TABS
-function renderTabs(){const TABS=[{id:'overview',k:'tab.overview'},{id:'finance',k:'tab.finance'},{id:'subscribers',k:'tab.subscribers'},{id:'divisions',k:'tab.divisions'},{id:'analytics',k:'tab.analytics'},{id:'settings',k:'tab.settings'}];document.getElementById('tabs-bar').innerHTML=TABS.map(t=>`<div class="tab ${S.activeTab===t.id?'active':''}" onclick="switchTab('${t.id}')">${escH(lbl(t.k))}</div>`).join('');}
+function renderTabs(){const TABS=[{id:'overview',k:'tab.overview'},{id:'finance',k:'tab.finance'},{id:'subscribers',k:'tab.subscribers'},{id:'trace',k:'tab.trace'},{id:'divisions',k:'tab.divisions'},{id:'analytics',k:'tab.analytics'},{id:'settings',k:'tab.settings'}];document.getElementById('tabs-bar').innerHTML=TABS.map(t=>`<div class="tab ${S.activeTab===t.id?'active':''}" onclick="switchTab('${t.id}')">${escH(lbl(t.k))}</div>`).join('');}
 
 function destroyCharts(){Object.values(S.charts).forEach(c=>{try{c.destroy();}catch{}});S.charts={};}
 function noData(msg){return `<div class="empty">${msg||'Import a bill to get started.'}</div>`;}
@@ -231,6 +231,7 @@ function renderTab(tab){
   if(tab==='overview'){el.innerHTML=noBill?noData():renderOverview();if(!noBill)requestAnimationFrame(initOverviewCharts);}
   else if(tab==='finance'){el.innerHTML=noBill?noData():renderFinance();}
   else if(tab==='subscribers'){el.innerHTML=renderSubscriberPage();if(S.activeOrgId)loadSubscriberData();else showTabEmpty('sub-content','Import a bill first.');}
+  else if(tab==='trace'){el.innerHTML=renderTracePage();requestAnimationFrame(()=>document.getElementById('trace-q')?.focus());}
   else if(tab==='divisions'){el.innerHTML=renderDivisionsPage();if(S.activeOrgId)loadDivisionsData();else showTabEmpty('div-content','Import a bill first.');}
   else if(tab==='analytics'){el.innerHTML=renderAnalyticsPage();loadAnalyticsData();}
   else if(tab==='settings'){el.innerHTML=renderSettingsPage();if(S.activeOrgId)loadSettingsData();else showTabEmpty('sett-content','Import a bill first.');}
@@ -514,12 +515,13 @@ async function buildCustomReport(){if(!S.activeBillId){alert('Select a bill firs
 // MODAL
 function showModal(title,body,saveCall){const ex=document.getElementById('__modal');if(ex)ex.remove();const el=document.createElement('div');el.id='__modal';el.className='modal-overlay';el.innerHTML=`<div class="modal"><div class="modal-head"><span class="modal-title">${escH(title)}</span><button class="dp-close" onclick="closeModal()">✕</button></div>${body}<div style="display:flex;gap:8px;margin-top:16px"><button class="hbtn primary" onclick="${saveCall}" style="flex:1">Save</button><button class="hbtn" onclick="closeModal()">Cancel</button></div></div>`;document.body.appendChild(el);}
 function closeModal(){document.getElementById('__modal')?.remove();}
-let _histData=null,_histSub=null,_histAsOf='';
+let _histData=null,_histSub=null,_histAsOf='',_histOrg=null;
 const _EV={first_seen:['🟢','b-green'],reactivated:['♻️','b-green'],name_change:['✏️','b-blue'],plan_change:['🔄','b-amber'],cost_spike:['🔺','b-red'],cost_drop:['🔻','b-green'],gone:['🔴','b-red'],dormant:['⏸️','b-amber']};
 const _ST={active:'b-green',dormant:'b-amber',gone:'b-red',unknown:'b-blue'};
-async function openSubHistory(subNum,asOf){
-  if(!S.activeOrgId)return;
-  _histSub=subNum;_histAsOf=asOf||'';
+async function openSubHistory(subNum,asOf,orgId){
+  const org=orgId||S.activeOrgId;
+  if(!org)return;
+  _histSub=subNum;_histAsOf=asOf||'';_histOrg=org;
   document.getElementById('hist-overlay').classList.add('open');
   document.getElementById('hist-panel').classList.add('open');
   document.getElementById('hist-title').textContent='Loading…';
@@ -527,7 +529,7 @@ async function openSubHistory(subNum,asOf){
   document.getElementById('hist-body').innerHTML='';
   document.getElementById('hist-footer').innerHTML='';
   document.getElementById('hist-chart-wrap').style.display='none';
-  const d=await apiFetch('/api/orgs/'+S.activeOrgId+'/subscribers/'+encodeURIComponent(subNum)+'/history'+(asOf?'?as_of='+encodeURIComponent(asOf):''));
+  const d=await apiFetch('/api/orgs/'+org+'/subscribers/'+encodeURIComponent(subNum)+'/history'+(asOf?'?as_of='+encodeURIComponent(asOf):''));
   if(!d){closeSubHistory();return;}
   _histData=d;renderSubHistory(d);
 }
@@ -554,7 +556,7 @@ function renderSubHistory(d){
   }
   const tagsH=(d.profile?.tags||'').split(',').map(t=>t.trim()).filter(Boolean).map(t=>`<span class="badge b-blue" style="font-size:10px">${escH(t)}</span>`).join(' ');
   const aps=d.available_periods||[];
-  const asOfSel=aps.length>1?`<div class="dp-section" style="padding-bottom:6px"><label style="font-size:11px;color:var(--fg3)">As of period </label><select onchange="openSubHistory('${escH(d.subscriber_number)}',this.value)" style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;color:var(--fg)"><option value="">Latest</option>${aps.map(p=>`<option value="${escH(p.statement_iso)}" ${d.as_of===p.statement_iso?'selected':''}>${escH(p.statement_date)}</option>`).join('')}</select></div>`:'';
+  const asOfSel=aps.length>1?`<div class="dp-section" style="padding-bottom:6px"><label style="font-size:11px;color:var(--fg3)">As of period </label><select onchange="openSubHistory(_histSub,this.value,_histOrg)" style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;color:var(--fg)"><option value="">Latest</option>${aps.map(p=>`<option value="${escH(p.statement_iso)}" ${d.as_of===p.statement_iso?'selected':''}>${escH(p.statement_date)}</option>`).join('')}</select></div>`:'';
   let html=asOfSel+`<div class="dp-section"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span style="color:var(--fg3)">${escH(d.display_number||'')}</span><span class="badge b-blue" style="font-size:10px">${escH(s.current_division||'–')}</span></div><div style="font-size:11px;color:var(--fg3)">First seen ${escH(s.first_seen||'—')} · Last seen ${escH(s.last_seen||'—')}</div>${tagsH?`<div style="margin-top:5px">${tagsH}</div>`:''}</div>`;
   if(evs.length){
     html+=`<div class="dp-section"><div class="dp-section-title">Activity (${evs.length})</div>`+
@@ -580,9 +582,59 @@ function exportSubHistoryCSV(){
 }
 async function histRollback(id){
   if(!confirm('Undo this change? It will be restored and the line/profile reverted.'))return;
-  const r=await apiPost('/api/orgs/'+S.activeOrgId+'/changes/'+id+'/rollback',{});
-  if(r&&r.ok){S.waste=null;await openSubHistory(_histSub,_histAsOf);}
+  const r=await apiPost('/api/orgs/'+(_histOrg||S.activeOrgId)+'/changes/'+id+'/rollback',{});
+  if(r&&r.ok){S.waste=null;await openSubHistory(_histSub,_histAsOf,_histOrg);}
   else alert('Rollback failed: '+((r&&r.detail)||'Unknown error'));
+}
+// TRACE TAB — search a number across all uploaded bills
+let _traceData=null,_traceOrder='desc',_traceTimer=null;
+function renderTracePage(){
+  return `<div class="card"><div class="card-title">Trace a number across all bills</div>
+    <p style="font-size:12px;color:var(--fg3);margin:-2px 0 12px">Search every uploaded bill for a subscriber number — any format or partial digits. Click an instance to drill into that bill's call records, or a number chip for the full timeline.</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="trace-q" placeholder="e.g. 0722123456, +254…, or last digits" oninput="debounceTraceSearch(this.value)" style="flex:1;min-width:220px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;color:var(--fg)">
+      <select id="trace-order" onchange="traceSetOrder(this.value)" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--fg)"><option value="desc">Newest first</option><option value="asc">Oldest first</option></select>
+    </div>
+    <div id="trace-results" style="margin-top:14px"><div class="empty">Enter a number to search across all uploaded bills.</div></div></div>`;
+}
+function traceSetOrder(o){_traceOrder=o;const q=document.getElementById('trace-q')?.value||'';if(q.trim().length>=3)runTraceSearch(q);}
+function debounceTraceSearch(q){clearTimeout(_traceTimer);_traceTimer=setTimeout(()=>runTraceSearch(q),300);}
+async function runTraceSearch(q){
+  const el=document.getElementById('trace-results');if(!el)return;
+  if(!q||q.trim().length<3){el.innerHTML='<div class="empty">Enter at least 3 digits to search.</div>';return;}
+  el.innerHTML='<div class="spinner"></div>';
+  const d=await apiFetch('/api/number-search?order='+_traceOrder+'&q='+encodeURIComponent(q));
+  if(!d){el.innerHTML='<div class="empty">Search failed — try again.</div>';return;}
+  _traceData=d;renderTraceResults(d);
+}
+function renderTraceResults(d){
+  const el=document.getElementById('trace-results');if(!el)return;
+  const inst=d.instances||[],dn=d.distinct_numbers||[];
+  if(!inst.length){el.innerHTML='<div class="empty">No matches found in any uploaded bill for "'+escH(d.query||'')+'".</div>';return;}
+  const multi=dn.length>1;
+  const chips=dn.map(n=>`<span class="badge b-blue" style="font-size:11px;cursor:pointer" title="Open full timeline" onclick="openSubHistory('${escH(n.subscriber_number)}','','${escH(n.org_id||'')}')">${escH(n.display_number)} · ${n.count} bill(s) · KES ${fmtN(n.total_kes||0)} ↗</span>`).join(' ');
+  let html=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px"><div style="font-size:12px;color:var(--fg3)">${inst.length} instance(s)${multi?(' across '+dn.length+' numbers'):''}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${chips}</div></div>`;
+  html+=`<div class="tbl-wrap"><table><thead><tr><th style="width:18px"></th><th>Statement</th>${multi?'<th>Number</th>':''}<th>Org</th><th>Name</th><th>Division</th><th style="text-align:right">CDRs</th><th style="text-align:right">Amount</th></tr></thead><tbody>`;
+  inst.forEach((r,i)=>{
+    const rid='trc-'+i;
+    html+=`<tr class="${r.is_anomaly?'anom':''}" style="cursor:pointer" onclick="toggleTraceInstance(${i},'${escH(r.subscriber_number)}',${r.bill_id})"><td style="color:var(--fg3)"><span id="${rid}-caret">▸</span></td><td style="white-space:nowrap">${escH(r.statement_date||'—')}</td>${multi?`<td style="font-size:11px;color:var(--fg3)">${escH(r.display_number)}</td>`:''}<td style="font-size:11px;color:var(--fg3)">${escH(r.org_name||r.org_id)}</td><td>${escH(r.raw_name||'—')}</td><td><span class="badge b-blue" style="font-size:10px">${escH(r.division||'–')}</span></td><td style="text-align:right;color:var(--fg3)">${r.cdr_count||0}</td><td style="text-align:right;font-weight:600;color:var(--blue);white-space:nowrap">${fmtN(r.amount_due_kes)}</td></tr>`;
+    html+=`<tr id="${rid}-detail" style="display:none"><td></td><td colspan="${multi?7:6}" style="padding:0 0 10px"><div id="${rid}-body" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px"><div class="spinner"></div></div></td></tr>`;
+  });
+  html+=`</tbody></table></div>`;
+  el.innerHTML=html;
+}
+async function toggleTraceInstance(i,num,billId){
+  const detail=document.getElementById('trc-'+i+'-detail'),caret=document.getElementById('trc-'+i+'-caret');if(!detail)return;
+  if(detail.style.display!=='none'){detail.style.display='none';if(caret)caret.textContent='▸';return;}
+  detail.style.display='';if(caret)caret.textContent='▾';
+  const body=document.getElementById('trc-'+i+'-body');
+  if(body.dataset.loaded)return;
+  const cdrs=await apiFetch('/api/bills/'+billId+'/subscriber/'+encodeURIComponent(num)+'/cdr?limit=500');
+  const inst=(_traceData?.instances||[]).find(x=>x.bill_id===billId&&x.subscriber_number===num)||{};
+  let h=`<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--fg3);margin-bottom:8px"><span>Tariff: <strong style="color:var(--fg)">${escH(inst.tariff_plan||'—')}</strong></span><span>Pre-tax: <strong style="color:var(--fg)">${fmtN(inst.pre_tax||0)}</strong></span><span>Excise: <strong style="color:var(--fg)">${fmtN(inst.excise||0)}</strong></span><span>VAT: <strong style="color:var(--fg)">${fmtN(inst.vat||0)}</strong></span>${inst.anomaly_reason?`<span style="color:var(--coral)">⚠ ${escH(inst.anomaly_reason)}</span>`:''}</div>`;
+  if(!cdrs||!cdrs.length){h+='<div class="empty" style="padding:8px">No call records stored for this number in this bill.</div>';}
+  else{h+=`<table style="width:100%"><thead><tr><th>Date</th><th>Time</th><th>Destination</th><th>Type</th><th style="text-align:right">Duration</th><th style="text-align:right">Charge</th></tr></thead><tbody>${cdrs.map(c=>`<tr><td style="font-size:11px">${escH(c.date||'')}</td><td style="font-size:11px">${escH(c.time||'')}</td><td style="font-size:11px">${escH(c.destination||'')}</td><td style="font-size:11px">${escH(c.service_type||'')}</td><td style="text-align:right;font-size:11px">${escH(c.duration||'')}</td><td style="text-align:right;font-size:11px">${fmtN(c.charge||0)}</td></tr>`).join('')}</tbody></table>`;if(cdrs.length>=500)h+='<div style="font-size:10px;color:var(--fg3);margin-top:6px">Showing first 500 records.</div>';}
+  body.innerHTML=h;body.dataset.loaded='1';
 }
 
 // UTILS

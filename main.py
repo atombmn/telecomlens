@@ -1888,6 +1888,88 @@ def waste_insights(org_id: str, db: Session = Depends(get_db)):
     return _compute_waste(org_id, db)
 
 
+@app.get("/api/number-search")
+def number_search(q: str = "", order: str = "desc", limit: int = 1000,
+                  db: Session = Depends(get_db)):
+    """Search every uploaded bill (across all orgs) for a subscriber number and
+    return one instance per bill the number appears in, sorted by statement date
+    (newest first by default; order='asc' for oldest first). Matches by national
+    significant digits, so any input format or partial fragment resolves."""
+    sig = _significant_digits(q)
+    if not sig:
+        return {"query": q, "significant_digits": None, "instance_count": 0,
+                "distinct_numbers": [], "instances": []}
+
+    lines = (db.query(InvoiceLine)
+             .filter(InvoiceLine.subscriber_number.ilike(f"%{sig}%")).all())
+    if not lines:
+        return {"query": q, "significant_digits": sig, "instance_count": 0,
+                "distinct_numbers": [], "instances": []}
+
+    bill_ids = {l.bill_id for l in lines}
+    bills = {b.id: b for b in
+             db.query(BillUpload).filter(BillUpload.id.in_(bill_ids)).all()}
+    org_names = {o.id: o.name for o in db.query(Organisation).all()}
+
+    # Aggregate per (bill, number) so a number with >1 line in a bill is one row.
+    agg: dict[tuple, dict] = {}
+    distinct: dict[str, dict] = {}
+    for l in lines:
+        b = bills.get(l.bill_id)
+        if not b:
+            continue
+        key = (l.bill_id, l.subscriber_number)
+        a = agg.get(key)
+        if a is None:
+            a = agg[key] = {
+                "bill_id": l.bill_id, "org_id": l.org_id,
+                "org_name": org_names.get(l.org_id, l.org_id),
+                "statement_date": b.statement_date, "statement_iso": b.statement_iso,
+                "filename": b.filename, "subscriber_number": l.subscriber_number,
+                "display_number": display_msisdn(l.subscriber_number),
+                "raw_name": l.raw_name or "", "division": l.division or "",
+                "tariff_plan": l.tariff_plan or "", "amount_due_kes": 0.0,
+                "pre_tax": 0.0, "vat": 0.0, "excise": 0.0, "cdr_count": 0,
+                "is_anomaly": False, "anomaly_reason": "", "_max": -1.0,
+            }
+        a["amount_due_kes"] += l.amount_due_kes or 0
+        a["pre_tax"] += l.pre_tax or 0
+        a["vat"] += l.vat or 0
+        a["excise"] += l.excise or 0
+        a["cdr_count"] += l.cdr_count or 0
+        a["is_anomaly"] = a["is_anomaly"] or bool(l.is_anomaly)
+        if l.anomaly_reason and l.anomaly_reason not in a["anomaly_reason"]:
+            a["anomaly_reason"] = (a["anomaly_reason"] + "; " + l.anomaly_reason).strip("; ")
+        if (l.amount_due_kes or 0) > a["_max"]:
+            a["_max"] = l.amount_due_kes or 0
+            a["raw_name"] = l.raw_name or a["raw_name"]
+            a["division"] = l.division or a["division"]
+            a["tariff_plan"] = l.tariff_plan or a["tariff_plan"]
+        d = distinct.setdefault(l.subscriber_number, {
+            "subscriber_number": l.subscriber_number,
+            "display_number": display_msisdn(l.subscriber_number),
+            "org_id": l.org_id, "count": 0, "total_kes": 0.0})
+        d["total_kes"] = round(d["total_kes"] + (l.amount_due_kes or 0), 2)
+
+    instances = []
+    for a in agg.values():
+        a.pop("_max", None)
+        for k in ("amount_due_kes", "pre_tax", "vat", "excise"):
+            a[k] = round(a[k], 2)
+        instances.append(a)
+        distinct[a["subscriber_number"]]["count"] += 1
+    instances.sort(key=lambda r: (r["statement_iso"] or ""), reverse=(order != "asc"))
+    instances = instances[: max(1, min(limit, 2000))]
+
+    return {
+        "query": q, "significant_digits": sig,
+        "instance_count": len(instances),
+        "distinct_numbers": sorted(distinct.values(),
+                                   key=lambda x: x["count"], reverse=True),
+        "instances": instances,
+    }
+
+
 @app.get("/api/orgs/{org_id}/tags")
 def list_tags(org_id: str, db: Session = Depends(get_db)):
     """Return all unique tags in use across subscribers for this org."""

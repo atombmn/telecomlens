@@ -6,7 +6,8 @@
 
 ## What's new in v4.2
 
-- **Per-number history** — click any subscriber (in the Registry, Lifecycle, Waste, or a bill drill-down) to open a cross-bill profile: spend-over-time chart, a derived activity feed (first seen, name/plan changes, cost spikes/drops, dormancy, reactivation, deactivation), the full manual-change audit with one-click **Undo**, and a per-period table. Pin any past period with the **As of** selector
+- **Per-number history** — click any subscriber (in the Registry, Lifecycle, Waste, Trace, or a bill drill-down) to open a cross-bill profile: spend-over-time chart, a derived activity feed (first seen, name/plan changes, cost spikes/drops, dormancy, reactivation, deactivation), the full manual-change audit with one-click **Undo**, and a per-period table. Pin any past period with the **As of** selector
+- **Trace tab** — search any subscriber number across *every* uploaded bill at once (any format or partial digits). See one row per bill it appears in, sorted by date, and expand any instance to drill into that bill's call records — answering "when did this number first appear and how has it moved over time" in one place
 - **Waste insights** — a new **Subscribers → Waste** subtab (and report section) surfacing lines billed without any usage, the biggest month-on-month increases, and lines that dropped off — the numbers most worth a second look
 - **Canonical phone-number matching** — `0722…`, `254722…` and `+254 722…` are now treated as one line everywhere, so a number's history is never split by formatting differences. Existing databases are upgraded automatically on first launch
 - **Correct chronology** — bills now sort by a proper date key; fixes subtle mis-ordering that affected lifecycle detection, trend sparklines, and the forecast when bills spanned multiple months
@@ -156,6 +157,7 @@ Key endpoints:
 | `GET /api/bills/{id}/summary` | Bill totals (spend, taxes, outstanding) |
 | `GET /api/bills/{id}/drilldown` | Line items for any field/value |
 | `GET /api/orgs/{id}/subscribers/{num}/history` | Cross-bill history for one number (optional `as_of`) |
+| `GET /api/number-search` | Find a number across all bills/orgs (Trace tab) |
 | `GET /api/orgs/{id}/waste` | Billed-but-unused, top increases, drop-offs |
 | `POST /api/orgs/{id}/retag` | Bulk-reassign divisions |
 | `GET /api/orgs/{id}/changes` | Change log |
@@ -212,6 +214,7 @@ python tests/test_msisdn.py     # unit tests
 python tests/test_backfill.py   # migration + backfill
 python tests/test_history.py    # history endpoint
 python tests/test_insights.py   # as_of, waste, rollback, report
+python tests/test_trace.py      # cross-bill number search
 ```
 
 ---
