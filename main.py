@@ -2157,78 +2157,179 @@ async def import_budget_csv(
     return {"imported": imported, "errors": errors}
 
 
+_MONTH_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+
+def _period_bucket(statement_iso: str, gran: str):
+    """(key, label, sort) for a 'YYYY-MM-DD' date at month|quarter|year
+    (calendar). Returns None if the date is unparseable."""
+    m = re.match(r"^(\d{4})-(\d{2})", statement_iso or "")
+    if not m:
+        return None
+    y, mo = m.group(1), int(m.group(2))
+    if gran == "year":
+        return (y, y, y)
+    if gran == "quarter":
+        qn = (mo - 1) // 3 + 1
+        return (f"{y}-Q{qn}", f"Q{qn} {y}", f"{y}-{qn}")
+    return (f"{y}-{mo:02d}", f"{_MONTH_ABBR[mo]} {y}", f"{y}-{mo:02d}")
+
+
+def _months_expected(gran: str) -> int:
+    return {"year": 12, "quarter": 3}.get(gran, 1)
+
+
+def _dedup_bills(bills: list) -> list:
+    """One bill per (org_id, YYYY-MM): keep the highest subscriber_count,
+    tie-broken by most recent upload. Bills with no parseable date are dropped."""
+    best: dict = {}
+    for b in bills:
+        ym = (b.statement_iso or "")[:7]
+        if not re.match(r"^\d{4}-\d{2}$", ym):
+            continue
+        key = (b.org_id, ym)
+        cur = best.get(key)
+        if cur is None:
+            best[key] = b
+            continue
+        b_sc, c_sc = b.subscriber_count or 0, cur.subscriber_count or 0
+        b_up, c_up = b.uploaded_at or datetime.min, cur.uploaded_at or datetime.min
+        if b_sc > c_sc or (b_sc == c_sc and b_up > c_up):
+            best[key] = b
+    return sorted(best.values(), key=lambda x: x.statement_iso or "")
+
+
+@app.get("/api/orgs/{org_id}/spend-trend")
+def spend_trend(org_id: str, granularity: str = "month",
+                db: Session = Depends(get_db)):
+    """Spend trend bucketed by month|quarter|year (calendar). Duplicate bills
+    for the same month are collapsed (highest subscriber_count). Partial buckets
+    (fewer months than expected) are flagged rather than annualised."""
+    gran = granularity if granularity in ("month", "quarter", "year") else "month"
+    bills = _dedup_bills(db.query(BillUpload).filter_by(org_id=org_id).all())
+    buckets: dict = {}
+    for b in bills:
+        pb = _period_bucket(b.statement_iso, gran)
+        if not pb:
+            continue
+        key, label, sort = pb
+        a = buckets.get(key)
+        if a is None:
+            a = buckets[key] = {"period": key, "period_label": label, "_sort": sort,
+                                "account_total": 0.0, "anomaly_count": 0,
+                                "subscriber_count": 0, "divisions": {},
+                                "_months": set(), "_last": "", "bill_ids": []}
+        lines = db.query(InvoiceLine).filter_by(bill_id=b.id).all()
+        a["account_total"] += b.account_total or 0
+        a["anomaly_count"] += sum(1 for l in lines if l.is_anomaly)
+        for l in lines:
+            a["divisions"][l.division] = round(
+                a["divisions"].get(l.division, 0) + (l.amount_due_kes or 0), 2)
+        a["_months"].add((b.statement_iso or "")[:7])
+        a["bill_ids"].append(b.id)
+        if (b.statement_iso or "") >= a["_last"]:   # latest month's headcount
+            a["_last"] = b.statement_iso or ""
+            a["subscriber_count"] = b.subscriber_count or 0
+
+    exp = _months_expected(gran)
+    out = []
+    for a in buckets.values():
+        a["account_total"] = round(a["account_total"], 2)
+        a["months_included"] = len(a.pop("_months"))
+        a["months_expected"] = exp
+        a["partial"] = a["months_included"] < exp
+        a.pop("_last", None)
+        out.append(a)
+    out.sort(key=lambda r: r.pop("_sort"))
+    return out
+
+
 @app.get("/api/orgs/{org_id}/budget-vs-actual")
-def budget_vs_actual(org_id: str, db: Session = Depends(get_db)):
-    """
-    For each bill period, compare actual division spend against budget.
-    Returns per-period, per-division actuals + budget + variance + cost-per-head.
-    """
-    bills = (
-        db.query(BillUpload)
-        .filter_by(org_id=org_id)
-        .order_by(BillUpload.statement_iso)
-        .all()
-    )
+def budget_vs_actual(org_id: str, granularity: str = "month",
+                     db: Session = Depends(get_db)):
+    """Per-period actual vs budget by division, bucketed by month|quarter|year.
+    Budget for a bucket uses a native period entry (e.g. '2026-Q1' or '2026')
+    when one exists, otherwise sums the monthly budget entries it contains;
+    coverage and source are reported so partial budgets are never hidden."""
+    gran = granularity if granularity in ("month", "quarter", "year") else "month"
+    bills = _dedup_bills(db.query(BillUpload).filter_by(org_id=org_id).all())
     budgets = db.query(BudgetEntry).filter_by(org_id=org_id).all()
-    # Build budget lookup: {period: {division: {budget_kes, headcount}}}
-    bmap: dict = {}
-    for b in budgets:
-        bmap.setdefault(b.period, {})[b.division] = {
-            "budget_kes": b.budget_kes,
-            "headcount": b.headcount,
-        }
 
+    bmap_month: dict = {}   # "YYYY-MM" -> {div: {budget_kes, headcount}}
+    bmap_native: dict = {}  # any period key -> {div: {budget_kes, headcount}}
+    for be in budgets:
+        rec = {"budget_kes": be.budget_kes or 0, "headcount": be.headcount or 0}
+        if re.match(r"^\d{4}-\d{2}$", be.period or ""):
+            bmap_month.setdefault(be.period, {})[be.division] = rec
+        bmap_native.setdefault(be.period, {})[be.division] = rec
+
+    buckets: dict = {}
+    for b in bills:
+        pb = _period_bucket(b.statement_iso, gran)
+        if not pb:
+            continue
+        key, label, sort = pb
+        a = buckets.get(key)
+        if a is None:
+            a = buckets[key] = {"period": key, "period_label": label, "_sort": sort,
+                                "div_actual": {}, "_months": set(), "bill_ids": []}
+        for l in db.query(InvoiceLine).filter_by(bill_id=b.id).all():
+            a["div_actual"][l.division] = a["div_actual"].get(l.division, 0) + (l.amount_due_kes or 0)
+        a["_months"].add((b.statement_iso or "")[:7])
+        a["bill_ids"].append(b.id)
+
+    exp = _months_expected(gran)
     result = []
-    for bill in bills:
-        # Normalise period to YYYY-MM
-        sd = bill.statement_date or ""
-        import re as _re
-        m = _re.search(r"(\d{4})-(\d{2})", sd)
-        if not m:
-            m2 = _re.search(r"(\d{2})[/-](\d{4})", sd)
-            period = f"{m2.group(2)}-{m2.group(1):0>2}" if m2 else sd[:7]
-        else:
-            period = f"{m.group(1)}-{m.group(2)}"
+    for key, a in buckets.items():
+        months = sorted(a["_months"])
+        # month granularity: the monthly entry IS the native budget for the key
+        native = (bmap_month.get(key) if gran == "month" else bmap_native.get(key))
 
-        lines = db.query(InvoiceLine).filter_by(bill_id=bill.id).all()
-        div_actual: dict[str, float] = {}
-        for line in lines:
-            div_actual[line.division] = div_actual.get(line.division, 0) + line.amount_due_kes
+        def div_budget(div):
+            if native and div in native:
+                return native[div]["budget_kes"], native[div]["headcount"], len(months), "native"
+            tot, hc, nb = 0.0, 0, 0
+            for mk in months:
+                e = (bmap_month.get(mk) or {}).get(div)
+                if e:
+                    tot += e["budget_kes"]; nb += 1
+                    if e["headcount"]:
+                        hc = e["headcount"]
+            return round(tot, 2), hc, nb, ("summed" if nb else "none")
 
-        all_divs = set(div_actual.keys()) | set((bmap.get(period) or {}).keys())
-        period_rows = []
+        budgeted_divs = set((native or {}).keys())
+        for mk in months:
+            budgeted_divs |= set((bmap_month.get(mk) or {}).keys())
+        all_divs = set(a["div_actual"].keys()) | budgeted_divs
+
+        rows = []
         for div in sorted(all_divs):
-            actual = round(div_actual.get(div, 0), 2)
-            bentry = (bmap.get(period) or {}).get(div, {})
-            budget = bentry.get("budget_kes", 0)
-            headcount = bentry.get("headcount", 0)
+            actual = round(a["div_actual"].get(div, 0), 2)
+            budget, headcount, mb, src = div_budget(div)
             variance = round(actual - budget, 2) if budget else None
-            pct_used = round((actual / budget) * 100, 1) if budget else None
-            cost_per_head = round(actual / headcount, 2) if headcount else None
-            period_rows.append({
-                "division": div,
-                "actual_kes": actual,
-                "budget_kes": budget,
-                "variance_kes": variance,
-                "pct_of_budget": pct_used,
-                "headcount": headcount,
-                "cost_per_head": cost_per_head,
-                "status": (
-                    "over" if (pct_used or 0) > 100
-                    else "warning" if (pct_used or 0) > 85
-                    else "ok" if budget
-                    else "no_budget"
-                ),
+            pct = round(actual / budget * 100, 1) if budget else None
+            cph = round(actual / headcount, 2) if headcount else None
+            rows.append({
+                "division": div, "actual_kes": actual, "budget_kes": round(budget, 2),
+                "variance_kes": variance, "pct_of_budget": pct, "headcount": headcount,
+                "cost_per_head": cph, "budget_source": src, "months_budgeted": mb,
+                "status": ("over" if (pct or 0) > 100 else "warning" if (pct or 0) > 85
+                           else "ok" if budget else "no_budget"),
             })
 
+        months_with_budget = sum(1 for mk in months if bmap_month.get(mk))
+        bsrc = ("native" if native else "summed" if months_with_budget else "none")
         result.append({
-            "bill_id": bill.id,
-            "period": period,
-            "statement_date": bill.statement_date,
-            "total_actual": round(sum(div_actual.values()), 2),
-            "total_budget": round(sum(b.budget_kes for b in budgets if b.period == period), 2),
-            "divisions": period_rows,
+            "period": key, "period_label": a["period_label"],
+            "total_actual": round(sum(a["div_actual"].values()), 2),
+            "total_budget": round(sum(r["budget_kes"] for r in rows), 2),
+            "months_included": len(months), "months_expected": exp,
+            "partial": len(months) < exp, "budget_source": bsrc,
+            "months_budgeted": (len(months) if native else months_with_budget),
+            "divisions": rows, "_sort": a["_sort"],
         })
+    result.sort(key=lambda r: r.pop("_sort"))
     return result
 
 

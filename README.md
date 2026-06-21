@@ -42,7 +42,7 @@
 | **Finance** | Pre-tax / excise / VAT reconciliation with expected vs actual, chargeback register, one-click CSV / Excel / .docx export |
 | **Subscribers** | Registry (search, filter by division/tag), per-number cross-bill history with activity feed and rollback, lifecycle events (activations, deactivations, plan changes), waste insights (billed-but-unused, top movers, drop-offs), tag manager |
 | **Divisions** | Division Manager (create/rename/recolour), Bulk Retag tool, Change Log with individual and bulk rollback |
-| **Analytics** | Spend trend, budget vs actual, 3-month forecast with confidence bands, spend alerts, cost-per-head benchmarks |
+| **Analytics** | Spend trend and budget vs actual at month / quarter / year granularity, 3-month forecast with confidence bands, spend alerts, cost-per-head benchmarks |
 | **Settings** | Custom report builder (.docx), Excel chargeback pack, annotations, webhooks, audit trail, carrier detection |
 
 **Drill-down on everything** — click any KPI tile, chart bar/segment, or table row to open a side panel with the exact line items, a sparkline history, top-3 contributors, and a filtered CSV export.
@@ -109,7 +109,7 @@ CORS_ORIGINS=*                             # restrict to IP for shared deploymen
 
 ## Budget & Forecast
 
-1. **Analytics → Budget vs Actual** → click **✎ Edit Budgets** to enter monthly KES targets per division, or download the CSV template, fill it in, and upload
+1. **Analytics → Budget vs Actual** → use the Month / Quarter / Year toggle to choose granularity, then click **✎ Edit Budgets** to enter KES targets per division for the selected period (a quarterly or annual figure is saved as a native period target; if you only enter monthly targets, quarter/year views sum them and show the coverage). A CSV template for the active granularity is also available
 2. The trend chart shows a dotted budget line; the table shows variance and a colour-coded status badge per division
 3. **Analytics → Alerts** → add spend ceilings per subscriber, division, or total bill; a red breach banner appears when the latest bill exceeds any threshold
 4. **Analytics → Forecast** → 3-month linear regression with confidence bands, based on all imported bill history
@@ -215,6 +215,7 @@ python tests/test_backfill.py   # migration + backfill
 python tests/test_history.py    # history endpoint
 python tests/test_insights.py   # as_of, waste, rollback, report
 python tests/test_trace.py      # cross-bill number search
+python tests/test_analytics.py  # quarter/year roll-ups, dedup, budgets
 ```
 
 ---

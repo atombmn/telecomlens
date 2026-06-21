@@ -78,3 +78,32 @@ tests/test_insights.py   — as_of guard + waste + rollback + .docx section
 route registration       — /tags, /waste, /subscribers/{n}/history all present
 report content           — "Subscriber Lifecycle & Waste" section present in .docx
 ```
+
+---
+
+## 7. Quarterly / yearly analytics audit
+
+Scope: `spend-trend` + `budget-vs-actual` granularity (Spend Trend and Budget vs Actual subtabs only). Calendar periods (Jan–Dec), confirmed with the operator.
+
+### Correctness properties verified
+
+- **Month de-duplication.** `_dedup_bills` collapses multiple bills for one (org, YYYY-MM) to the single highest-subscriber-count bill, tie-broken by latest `uploaded_at`. Against the live dataset this keeps the real `cust_Z0000605_20251001` bill (1,413 subs) and drops the `dftPDF_Z0000605_20251001` draft (0 subs) for Oct 2025 — eliminating a double-count that the per-bill monthly view had been showing. Verified in `tests/test_analytics.py`.
+- **Unparseable dates excluded.** Bills with empty/!`YYYY-MM` `statement_iso` (e.g. the blank-date `…20250301_removed` bill) are dropped from every bucket rather than landing in a junk period. Double-guarded: `_dedup_bills` skips them and `_period_bucket` returns `None`.
+- **Partial buckets, not annualised.** A quarter (<3 months) or year (<12 months) is summed as-is and flagged `partial` with `months_included`/`months_expected`; the UI mutes the bar and prints "N of M months". No run-rating or extrapolation is performed. The current (incomplete) quarter/year therefore reads as partial by construction.
+- **Native vs summed budgets.** A bucket uses a period-level `BudgetEntry` (`2026-Q1`, `2026`) when present (`budget_source: native`); otherwise it sums the monthly entries it contains (`budget_source: summed`) and reports `months_budgeted` for honest coverage. The budget `period` column is free-text, so no migration was needed; `POST /budgets` upserts by (org, division, period), so re-saving a native target does not duplicate. Verified: Q1 summed at 2/3 coverage, Q2 read from a native quarterly target.
+- **Scope isolation.** Cost-per-Head (Benchmarks) and Forecast continue to read monthly data (`S.budgetVsActual` stays monthly; only `S.trendGran`/`S.bva` follow the toggle), so the granularity control cannot silently change those subtabs.
+- **Stable sort.** Bucket ordering uses a `_sort` key popped exactly once per row during `list.sort` (CPython evaluates the key function once per element); no `_sort` leaks into the response.
+
+### Accepted notes
+
+- Per-bucket `subscriber_count` is the latest month's count within the bucket (subscriber counts are not additive across months); the trend tooltip labels it as such.
+- `/api/trends` (legacy per-bill series) is retained unchanged for backward compatibility; the Analytics Spend Trend now reads the de-duplicated `spend-trend` endpoint instead.
+
+### Verification performed
+
+```
+py_compile: main.py parser.py discover.py msisdn.py report.py  — OK
+node --check (extracted SPA <script>)                          — OK
+tests/test_analytics.py  — bucketing + dedup + partial + native/summed budgets — ALL PASS
+full suite (msisdn, backfill, history, insights, trace, analytics) — ALL PASS
+```
