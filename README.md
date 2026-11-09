@@ -4,6 +4,23 @@
 
 ---
 
+## What's new in v4.3 — Security hardening
+
+- **Safe by default.** TelecomLens now defends its local API against the
+  operator's own browser. State-changing requests require a per-install token
+  (handled automatically by the dashboard), cross-origin reads are blocked,
+  the `Host` header is allow-listed, and a Content-Security-Policy plus security
+  headers ship on every response.
+- **No more third-party CDN.** Chart.js is vendored locally, so the dashboard
+  works fully offline and under a strict CSP.
+- **Webhooks can't be turned into SSRF**, folder import is confined to your bills
+  directory, uploads are size/type-capped, and errors no longer leak server
+  paths. Full detail in [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md)
+  and [`SECURITY.md`](SECURITY.md).
+- Remediates every finding from the v4.2.0 purple-team audit. **Upgrade is
+  seamless for dashboard users**; see the upgrade note in the CHANGELOG if you
+  call the API from scripts.
+
 ## What's new in v4.2
 
 - **Per-number history** — click any subscriber (in the Registry, Lifecycle, Waste, Trace, or a bill drill-down) to open a cross-bill profile: spend-over-time chart, a derived activity feed (first seen, name/plan changes, cost spikes/drops, dormancy, reactivation, deactivation), the full manual-change audit with one-click **Undo**, and a per-period table. Pin any past period with the **As of** selector
@@ -88,12 +105,34 @@ To stop the server: click **⏹ Stop** in the header, or press `Ctrl+C` in the t
 
 ## Configuration (`.env`)
 
+All settings have safe defaults — you only need a `.env` to change them. Copy
+`.env.example` to `.env`. Core settings:
+
 ```ini
 DATABASE_URL=sqlite:///./telecomlens.db   # swap for Postgres/MySQL in production
 BILLS_FOLDER=bills                         # folder for batch folder imports
 POPPLER_PATH=poppler                       # Windows only: path to Poppler bin
-CORS_ORIGINS=*                             # restrict to IP for shared deployments
 ```
+
+Security settings (defaults are safe for single-machine use):
+
+```ini
+AUTH_ENABLED=true          # require an app token on state-changing requests
+# APP_TOKEN=               # blank → auto-generated into .telecomlens_secret
+CORS_ORIGINS=              # blank → same-origin only (do NOT use *)
+# TRUSTED_HOSTS=           # add a LAN host/IP for shared installs
+MAX_UPLOAD_MB=25           # reject larger uploads
+WEBHOOK_ALLOW_PRIVATE=false # block webhooks to private/loopback addresses (SSRF)
+SECURITY_HEADERS=true      # emit CSP and other security headers
+```
+
+See [`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) for the full list
+and deployment guidance.
+
+> **Security model in one line:** TelecomLens is built to run on **loopback for a
+> single operator**. The token, CORS, and host controls above keep the local API
+> safe from any web page you happen to visit. If you must expose it on a network,
+> read the hardening doc first and put it behind an authenticating reverse proxy.
 
 ---
 
@@ -143,6 +182,11 @@ After each bill import TelecomLens POSTs JSON to configured URLs:
 ```
 Configure in **Settings → Webhooks**. Optional HMAC-SHA256 signing via `X-TelecomLens-Signature`.
 
+> Webhook URLs are validated against SSRF: non-`http(s)` schemes and targets that
+> resolve to private/loopback/link-local addresses are rejected (set
+> `WEBHOOK_ALLOW_PRIVATE=true` only if you deliberately post to an internal
+> service). Redirects are not followed.
+
 ---
 
 ## API
@@ -153,7 +197,7 @@ Key endpoints:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/bills/upload` | Import a PDF bill |
+| `POST /api/bills/upload` | Import a PDF bill (state-changing → needs `X-TL-Token`) |
 | `GET /api/bills/{id}/summary` | Bill totals (spend, taxes, outstanding) |
 | `GET /api/bills/{id}/drilldown` | Line items for any field/value |
 | `GET /api/orgs/{id}/subscribers/{num}/history` | Cross-bill history for one number (optional `as_of`) |
@@ -168,7 +212,11 @@ Key endpoints:
 | `GET /api/orgs/{id}/budget-vs-actual` | Budget vs actual per period |
 | `GET /api/orgs/{id}/forecast` | 3-month spend forecast |
 | `GET /api/orgs/{id}/audit-log` | Audit trail |
-| `POST /api/shutdown` | Graceful server stop |
+| `POST /api/shutdown` | Graceful server stop (needs `X-TL-Token`) |
+
+> **Authentication:** every `POST`/`PUT`/`PATCH`/`DELETE` requires the app token
+> in an `X-TL-Token` header. The dashboard sends it automatically. For scripts:
+> `-H "X-TL-Token: $(cat .telecomlens_secret)"`. `GET` reads are not token-gated.
 
 ---
 
@@ -181,14 +229,20 @@ telecomlens/
 ├── discover.py          Subscriber name classification helpers (ReDoS-guarded)
 ├── msisdn.py            Canonical Kenyan/Safaricom number normalisation
 ├── report.py            .docx report generator (python-docx)
-├── requirements.txt     Python dependencies
+├── requirements.txt     Python dependencies (bounded ranges)
+├── SECURITY.md          Security policy + private vulnerability reporting
+├── .env.example         Documented settings with safe defaults
 ├── .gitattributes       Enforces CRLF on .bat, LF on .sh/source
+├── .github/
+│   └── dependabot.yml   Weekly dependency updates + CVE alerts
 ├── install.bat / .sh    One-shot installer (Windows / Linux+macOS)
 ├── start.bat / .sh      Server launcher
 ├── bills/               Drop PDFs here for batch import
-├── tests/               Unit + integration tests
+├── docs/                Audit + security-hardening documentation
+├── tests/               Unit + integration + security tests
 └── static/
-    └── index.html       Single-file SPA dashboard (~100 KB)
+    ├── index.html       Single-file SPA dashboard (~100 KB)
+    └── chart.umd.min.js Vendored Chart.js 4.4.1 (no third-party CDN)
 ```
 
 ---
@@ -216,7 +270,10 @@ python tests/test_history.py    # history endpoint
 python tests/test_insights.py   # as_of, waste, rollback, report
 python tests/test_trace.py      # cross-bill number search
 python tests/test_analytics.py  # quarter/year roll-ups, dedup, budgets
+python tests/test_security.py   # auth token, SSRF, CSP, upload caps, host allow-list
 ```
+
+For security reports, see [`SECURITY.md`](SECURITY.md).
 
 ---
 

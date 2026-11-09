@@ -12,6 +12,9 @@ __pycache__/
 # Environment config (contains secrets)
 .env
 
+# Auto-generated app token (per-install secret — never commit)
+.telecomlens_secret
+
 # Downloaded binaries
 poppler/
 

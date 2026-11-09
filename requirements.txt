@@ -1,13 +1,22 @@
 # TelecomLens dependencies
-# Minimum versions — pip resolves the latest compatible build.
-# sqlalchemy>=2.0.36 is required for Python 3.13+ (fixes __firstlineno__ issue).
+#
+# Versions are BOUNDED (>=min,<next-major) so `pip install` stays reproducible
+# within a tested major line and cannot silently drift into a breaking — or
+# malicious — new major release. See the supply-chain note in
+# docs/SECURITY_HARDENING.md (audit finding PT-07).
+#
+# For a fully pinned, hash-verified install on YOUR platform, generate a lock:
+#     pip install pip-tools
+#     pip-compile --generate-hashes --output-file=requirements.lock requirements.txt
+#     pip install -r requirements.lock
+# Dependabot (.github/dependabot.yml) opens weekly update PRs and flags CVEs.
 
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-python-multipart>=0.0.9
-sqlalchemy>=2.0.36
-pydantic-settings>=2.3.0
-python-docx>=1.1.0
-openpyxl>=3.1.0
-httpx>=0.25.0
-psutil>=5.9
+fastapi>=0.111.0,<1.0.0
+uvicorn[standard]>=0.29.0,<1.0.0
+python-multipart>=0.0.9,<1.0.0
+sqlalchemy>=2.0.36,<3.0.0
+pydantic-settings>=2.3.0,<3.0.0
+python-docx>=1.1.0,<2.0.0
+openpyxl>=3.1.0,<4.0.0
+httpx>=0.25.0,<1.0.0
+psutil>=5.9,<8.0.0

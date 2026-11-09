@@ -4,6 +4,68 @@ All notable changes to TelecomLens are documented here.
 
 ---
 
+## v4.3.0 — 2026-11-09 — Security hardening
+
+Remediates every finding from the v4.2.0 purple-team audit. The app is now
+**safe by default**: it defends the local API against the operator's own browser
+rather than assuming loopback is a trust boundary. See
+[`docs/SECURITY_HARDENING.md`](docs/SECURITY_HARDENING.md) and `SECURITY.md`.
+
+> **Upgrade note.** State-changing requests now require an app token. The
+> dashboard handles this automatically (no action needed). If you drive the API
+> from your own scripts, send the token from `.telecomlens_secret` in the
+> `X-TL-Token` header — see the hardening doc. To restore the old open behaviour
+> for throwaway local testing only, set `AUTH_ENABLED=false`.
+
+### Security
+- **App token on all mutations (PT-01/04/06)** — every `POST`/`PUT`/`PATCH`/`DELETE`
+  now requires a per-install token (`X-TL-Token`), auto-generated and persisted
+  to the git-ignored `.telecomlens_secret`. The dashboard receives it via a
+  same-origin-only `<meta>` injection, so a page the operator merely visits
+  cannot read it and therefore cannot forge state-changing calls (including the
+  previously open `/api/shutdown`).
+- **Strict CORS (PT-01)** — the wildcard `allow_origins=*` is gone; the default
+  is same-origin only (`CORS_ORIGINS` empty), which blocks a malicious site from
+  reading bill data in the operator's browser without affecting the dashboard.
+- **Host-header allow-list (PT-01)** — `TrustedHostMiddleware` restricts the
+  `Host` header to loopback plus any `TRUSTED_HOSTS`, blunting DNS-rebinding.
+- **Webhook SSRF guard (PT-02)** — webhook URLs are validated on create, on test,
+  and again at send time: non-`http(s)` schemes and targets resolving to
+  private/loopback/link-local/reserved addresses (e.g. `169.254.169.254`) are
+  rejected, redirects are not followed. Overridable with `WEBHOOK_ALLOW_PRIVATE`.
+- **Folder-import confinement (PT-03)** — `/api/bills/import-folder` is restricted
+  to `IMPORT_BASE` (default `BILLS_FOLDER`); it no longer reads arbitrary server
+  directories and no longer reflects the requested path in errors.
+- **Upload caps (PT-05)** — uploads are read in chunks and refused past
+  `MAX_UPLOAD_MB` (default 25), with a `%PDF` magic-byte check, preventing
+  memory-exhaustion and non-PDF payloads.
+- **Security headers + CSP (PT-09)** — all responses carry a Content-Security-Policy
+  (`frame-ancestors 'none'`, `object-src 'none'`, `connect-src 'self'`, …),
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and COOP.
+  **Chart.js is now vendored locally** (`static/chart.umd.min.js`, served from
+  `/static`) — no third-party CDN, and the app works offline.
+- **Safe error messages (PT-10)** — `pdftotext` stderr and filesystem paths are
+  logged server-side only; clients get generic messages.
+- **SQL-introspection footgun removed (PT-08)** — schema checks use the
+  SQLAlchemy inspector instead of an f-string `PRAGMA`.
+- **Supply-chain (PT-07)** — dependencies are bounded (`>=min,<next-major`),
+  `.github/dependabot.yml` adds weekly update PRs and CVE alerts, and the
+  hardening doc documents generating a hash-pinned lock.
+- **Secret hygiene** — `.telecomlens_secret` added to `.gitignore`;
+  `.env.example` ships restrictive defaults with every new setting documented.
+
+### Added
+- `SECURITY.md` — security policy and private-vulnerability-reporting pointer.
+- `docs/SECURITY_HARDENING.md` — threat model, controls, deployment guidance.
+- `tests/test_security.py` — 20 HTTP-level checks for the controls above.
+
+### Changed
+- Version → 4.3.0. New settings (all with safe defaults): `AUTH_ENABLED`,
+  `APP_TOKEN`, `CORS_ORIGINS`, `TRUSTED_HOSTS`, `MAX_UPLOAD_MB`, `IMPORT_BASE`,
+  `WEBHOOK_ALLOW_HTTP`, `WEBHOOK_ALLOW_PRIVATE`, `SECURITY_HEADERS`.
+
+---
+
 ## v4.2.0 — 2026-06-20
 
 ### Added

@@ -1,0 +1,22 @@
+# Dependabot keeps dependencies patched and flags vulnerable versions.
+# Addresses the supply-chain drift noted in the purple-team audit (PT-07):
+# pair this with the pinned requirements.lock so updates are deliberate.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"

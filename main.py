@@ -4,9 +4,11 @@ Run:  uvicorn main:app --reload --port 8000
 Docs: http://localhost:8000/docs
 """
 import os, re, sys, csv, io, subprocess, tempfile, hashlib, platform, json, logging, shutil
+import secrets, socket, ipaddress
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+from urllib.parse import urlparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,9 +17,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telecomlens")
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from sqlalchemy import (
     create_engine, Column, String, Float, Boolean, Integer,
     DateTime, Text, JSON, func, text,
@@ -38,6 +42,29 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./telecomlens.db"
     poppler_path: str = "poppler"
     bills_folder: str = "bills"
+
+    # ── Security / hardening (see .env.example and docs/SECURITY_HARDENING.md) ──
+    # Require a per-install token on every state-changing request. The dashboard
+    # injects it automatically; external scripts must send it in X-TL-Token.
+    auth_enabled: bool = True
+    # Explicit token. Leave blank to auto-generate and persist to a local file.
+    app_token: str = ""
+    # Cross-origin browsers allowed to READ the API. Empty = same-origin only
+    # (the safe default). Comma-separated origins, or "*" to disable (not advised).
+    cors_origins: str = ""
+    # Host header allow-list (blunts DNS-rebinding). Comma-separated; localhost
+    # and loopback are always allowed. Add your LAN host/IP for shared installs.
+    trusted_hosts: str = ""
+    # Reject uploads larger than this (defence against memory-exhaustion DoS).
+    max_upload_mb: int = 25
+    # Folder imports are confined to this base directory (defaults to bills_folder).
+    import_base: str = ""
+    # Outbound webhooks: block private/loopback/link-local targets (SSRF guard).
+    webhook_allow_http: bool = True
+    webhook_allow_private: bool = False
+    # Emit security response headers (CSP, nosniff, frame-ancestors, …).
+    security_headers: bool = True
+
     class Config:
         env_file = ".env"
 
@@ -279,8 +306,11 @@ _BACKFILL_MARKER = "migrate.msisdn_iso.v1"
 
 
 def _sqlite_column_exists(conn, table: str, col: str) -> bool:
-    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-    return any(r[1] == col for r in rows)
+    # Use the SQLAlchemy inspector rather than interpolating the table name into
+    # raw SQL — identifiers here are constants today, but string-built SQL is a
+    # footgun for the next edit. The inspector parameterises/escapes correctly.
+    from sqlalchemy import inspect as _sa_inspect
+    return any(c["name"] == col for c in _sa_inspect(conn).get_columns(table))
 
 
 def _migrate_schema() -> None:
@@ -363,11 +393,100 @@ _backfill_once()
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="TelecomLens", version="4.2.0")
-# CORS: wildcard is fine for a local single-machine tool.
-# Set CORS_ORIGINS=http://myserver:8000 in .env to restrict in production.
-_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="TelecomLens", version="4.3.0")
+
+
+# ── Security setup ────────────────────────────────────────────────────────────
+# TelecomLens is designed to run on loopback for a single operator, but the
+# operator's browser is a bridge onto that loopback: without these controls any
+# web page they visit could script the local API. See docs/SECURITY_HARDENING.md.
+
+TOKEN_HEADER = "X-TL-Token"
+_TOKEN_FILE = Path(__file__).parent / ".telecomlens_secret"
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _resolve_app_token() -> str:
+    """Return the shared app token: explicit setting, else a persisted random
+    token, generating and storing one (0600) on first run."""
+    if settings.app_token:
+        return settings.app_token.strip()
+    try:
+        if _TOKEN_FILE.exists():
+            tok = _TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
+    except OSError:
+        pass
+    tok = secrets.token_urlsafe(32)
+    try:
+        _TOKEN_FILE.write_text(tok, encoding="utf-8")
+        try:
+            os.chmod(_TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+        logger.info("Generated a new app token and stored it in %s", _TOKEN_FILE.name)
+    except OSError:
+        logger.warning("Could not persist app token; using an in-memory token for this run.")
+    return tok
+
+
+APP_TOKEN = _resolve_app_token() if settings.auth_enabled else ""
+
+# CORS: who may READ the API cross-origin. Default = nobody (same-origin only),
+# which does not affect the dashboard itself (same origin needs no CORS).
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+if _cors_origins == ["*"]:
+    logger.warning("CORS_ORIGINS='*' disables cross-origin protection — not advised.")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,                 # [] ⇒ no cross-origin reads
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", TOKEN_HEADER],
+)
+
+# Host-header allow-list (blunts DNS-rebinding against loopback).
+_allowed_hosts = {"localhost", "127.0.0.1", "::1", "[::1]"}
+_allowed_hosts |= {h.strip() for h in settings.trusted_hosts.split(",") if h.strip()}
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=sorted(_allowed_hosts))
+
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "       # SPA uses inline handlers + script
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+)
+
+
+@app.middleware("http")
+async def _security_mw(request: Request, call_next):
+    # CSRF / local-API protection: a shared token is required on every mutating
+    # request. The dashboard holds it (injected at serve time); a malicious page
+    # the operator visits cannot read it, so it cannot forge these calls.
+    if settings.auth_enabled and request.method in _MUTATING_METHODS:
+        supplied = request.headers.get(TOKEN_HEADER, "")
+        if not supplied or not secrets.compare_digest(supplied, APP_TOKEN):
+            return JSONResponse(
+                {"detail": "Missing or invalid app token. The dashboard sends this "
+                           "automatically; external callers must set the "
+                           f"{TOKEN_HEADER} header."},
+                status_code=401,
+            )
+    response = await call_next(request)
+    if settings.security_headers:
+        response.headers.setdefault("Content-Security-Policy", _CSP)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    return response
+
+
+# Serve vendored static assets (Chart.js) from /static — no third-party CDN.
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def get_db():
@@ -400,7 +519,10 @@ def pdf_to_text(pdf_bytes: bytes) -> str:
         r = subprocess.run([pdftotext, "-layout", tmp, "-"],
                            capture_output=True, timeout=120)
         if r.returncode != 0:
-            raise HTTPException(400, f"pdftotext error: {r.stderr.decode()[:500]}")
+            logger.warning("pdftotext failed (rc=%s): %s",
+                           r.returncode, r.stderr.decode(errors="replace")[:500])
+            raise HTTPException(400, "Could not extract text from the PDF "
+                                     "(is it a valid, text-based PDF?).")
         return r.stdout.decode("utf-8", errors="replace")
     finally:
         Path(tmp).unlink(missing_ok=True)
@@ -558,6 +680,47 @@ def store_bill(bill_data: dict, filename: str, sha: str, db: Session) -> BillUpl
     return bill
 
 
+def _webhook_url_reason(url: str) -> Optional[str]:
+    """Return a human reason the webhook URL is unsafe, or None if it is allowed.
+    Blocks non-http(s) schemes and, unless explicitly permitted, targets that
+    resolve to private / loopback / link-local / reserved addresses (SSRF guard)."""
+    try:
+        u = urlparse((url or "").strip())
+    except Exception:
+        return "URL could not be parsed"
+    if u.scheme not in ("http", "https"):
+        return "URL must start with http:// or https://"
+    if u.scheme == "http" and not settings.webhook_allow_http:
+        return "plain http:// is disabled; use https://"
+    host = u.hostname
+    if not host:
+        return "URL has no host"
+    if settings.webhook_allow_private:
+        return None
+    try:
+        infos = socket.getaddrinfo(host, u.port or (443 if u.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return "host could not be resolved"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return ("host resolves to a private/loopback address, which is not "
+                    "allowed (set WEBHOOK_ALLOW_PRIVATE=true to override)")
+    return None
+
+
+def _post_webhook(url: str, payload: bytes, headers: dict, timeout: float = 8.0):
+    """Send a webhook with SSRF re-validation at send time and no redirect-following."""
+    reason = _webhook_url_reason(url)
+    if reason:
+        raise ValueError(reason)
+    import httpx
+    with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+        return client.post(url, content=payload, headers=headers)
+
+
 def _fire_webhooks_bg(org_id: str, bill: "BillUpload", db: Session):
     """Best-effort synchronous webhook call (runs in same thread, non-blocking on error)."""
     hooks = db.query(WebhookConfig).filter_by(org_id=org_id, is_active=True).all()
@@ -574,12 +737,11 @@ def _fire_webhooks_bg(org_id: str, bill: "BillUpload", db: Session):
     }).encode()
     def _send(hook):
         try:
-            import httpx
             headers = {"Content-Type": "application/json", "X-TelecomLens-Event": "bill.imported"}
             if hook.secret:
                 sig = _hmac.new(hook.secret.encode(), payload, _hl.sha256).hexdigest()
                 headers["X-TelecomLens-Signature"] = f"sha256={sig}"
-            httpx.post(hook.url, content=payload, headers=headers, timeout=8)
+            _post_webhook(hook.url, payload, headers)
             hook.last_fired = datetime.utcnow()
             db.commit()
             logger.info("Webhook fired: %s → %s", org_id, hook.url)
@@ -628,9 +790,26 @@ def list_bills(org_id: Optional[str] = None, db: Session = Depends(get_db)):
              "uploaded_at": b.uploaded_at.isoformat() if b.uploaded_at else ""} for b in bills]
 
 
+async def _read_capped(file: UploadFile) -> bytes:
+    """Read an upload in chunks, refusing anything over MAX_UPLOAD_MB so a huge
+    (or endless) body cannot exhaust memory."""
+    limit = max(1, settings.max_upload_mb) * 1024 * 1024
+    buf = bytearray()
+    while True:
+        chunk = await file.read(1 << 20)
+        if not chunk:
+            break
+        buf += chunk
+        if len(buf) > limit:
+            raise HTTPException(413, f"File too large (limit {settings.max_upload_mb} MB).")
+    return bytes(buf)
+
+
 @app.post("/api/bills/upload")
 async def upload_bill(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    data = await file.read()
+    data = await _read_capped(file)
+    if data[:5] != b"%PDF-":
+        raise HTTPException(415, "Not a PDF file (missing %PDF header).")
     sha = hashlib.sha256(data).hexdigest()
     existing = db.query(BillUpload).filter_by(sha256=sha).first()
     if existing:
@@ -656,9 +835,17 @@ async def upload_bill(file: UploadFile = File(...), db: Session = Depends(get_db
 
 @app.post("/api/bills/import-folder")
 def import_folder(folder: str = Body(..., embed=True), db: Session = Depends(get_db)):
-    p = Path(folder).resolve()
-    if not p.exists():
-        raise HTTPException(404, f"Folder not found: {folder}")
+    # Confine imports to a configured base directory so this endpoint cannot be
+    # used to read arbitrary folders on the server. Default base = bills_folder.
+    base = Path(settings.import_base or settings.bills_folder).resolve()
+    try:
+        p = Path(folder).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "Invalid folder path.")
+    if p != base and base not in p.parents:
+        raise HTTPException(403, "Folder is outside the allowed import directory.")
+    if not p.is_dir():
+        raise HTTPException(404, "Folder not found.")
     results = []
     for pdf in sorted(p.glob("*.pdf")):
         data = pdf.read_bytes()
@@ -1407,15 +1594,19 @@ def list_webhooks(org_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/orgs/{org_id}/webhooks")
 def add_webhook(org_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    url = (body.get("url") or "").strip()
+    reason = _webhook_url_reason(url)
+    if reason:
+        raise HTTPException(400, f"Webhook URL rejected: {reason}.")
     wh = WebhookConfig(
         org_id=org_id,
-        url=body["url"],
+        url=url,
         secret=body.get("secret", ""),
         events=body.get("events", "bill.imported"),
         is_active=True,
     )
     db.add(wh); db.commit()
-    db.add(AuditLog(org_id=org_id, action="webhook.add", detail=f"url={body['url']}"))
+    db.add(AuditLog(org_id=org_id, action="webhook.add", detail=f"url={url}"))
     db.commit()
     return {"id": wh.id}
 
@@ -1434,16 +1625,20 @@ def test_webhook(org_id: str, wh_id: int, db: Session = Depends(get_db)):
     hook = db.query(WebhookConfig).filter_by(id=wh_id, org_id=org_id).first()
     if not hook:
         raise HTTPException(404)
+    reason = _webhook_url_reason(hook.url)
+    if reason:
+        raise HTTPException(400, f"Webhook URL rejected: {reason}.")
     try:
-        import httpx, json as _json
+        import json as _json
         payload = _json.dumps({"event": "ping", "org_id": org_id, "test": True}).encode()
-        r = httpx.post(hook.url, content=payload,
-                       headers={"Content-Type": "application/json",
-                                "X-TelecomLens-Event": "ping"},
-                       timeout=8)
+        r = _post_webhook(hook.url, payload,
+                          {"Content-Type": "application/json", "X-TelecomLens-Event": "ping"})
         return {"status": r.status_code, "ok": r.is_success}
+    except ValueError as e:
+        raise HTTPException(400, f"Webhook URL rejected: {e}.")
     except Exception as e:
-        raise HTTPException(400, f"Webhook test failed: {e}")
+        logger.warning("Webhook test failed (%s): %s", hook.url, e)
+        raise HTTPException(400, "Webhook test failed — see server logs for detail.")
 
 
 @app.get("/api/health/carriers")
@@ -2908,5 +3103,12 @@ def serve_dashboard():
     no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate",
                 "Pragma": "no-cache", "Expires": "0"}
     if index.exists():
-        return HTMLResponse(index.read_text(encoding="utf-8"), headers=no_cache)
+        html = index.read_text(encoding="utf-8")
+        # Inject the app token so the same-origin dashboard can authenticate its
+        # state-changing calls. A cross-origin page cannot read this response,
+        # so it cannot obtain the token.
+        if settings.auth_enabled:
+            meta = f'<meta name="tl-token" content="{APP_TOKEN}">'
+            html = html.replace("</head>", meta + "</head>", 1)
+        return HTMLResponse(html, headers=no_cache)
     return HTMLResponse("<h2>TelecomLens API ✓</h2><p><a href='/docs'>API docs</a></p>")

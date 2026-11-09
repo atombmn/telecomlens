@@ -4,6 +4,11 @@
 **Scope:** Full once-over of the codebase prior to packaging the v4.2.0 release.
 **Result:** Release-ready. All findings below were resolved or are documented as accepted risks for the local-tool threat model.
 
+> **Follow-up (v4.3.0, 2026-11-09):** a subsequent **purple-team security audit**
+> examined the trust boundaries in more depth and raised 10 findings (PT-01…PT-10),
+> all remediated in v4.3.0. See [`SECURITY_HARDENING.md`](SECURITY_HARDENING.md),
+> the v4.3.0 CHANGELOG entry, and `tests/test_security.py`.
+
 ---
 
 ## 1. Files reviewed
